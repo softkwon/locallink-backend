@@ -4,12 +4,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
-// 허용할 프론트엔드 주소 목록
-const allowedOrigins = [
-    'http://127.0.0.1:5500', 
-    'http://localhost:5500',
-    'https://locallink-frontend.vercel.app'
-];
+
 
 const corsOptions = {
     origin: function (origin, callback) {
@@ -45,7 +40,14 @@ const newsRoutes = require('./routes/news');
 const app = express();
 
 // --- 미들웨어 설정 ---
-app.use(cors(corsOptions));
+app.use(cors({
+    origin: [
+        'http://127.0.0.1:5500', 
+        'http://localhost:5500',
+        'https://locallink-frontend.vercel.app'
+    ],
+    credentials: true
+}));
 app.use(express.json());
 app.use(express.static('public'));
 
