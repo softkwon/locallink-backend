@@ -1,17 +1,22 @@
-// db.js (수정된 최종본)
+// db.js (최종 수정본)
 const { Pool } = require('pg');
 
+// 환경 변수에서 DB 정보를 읽어옵니다.
+// Render 서버에서는 Render 대시보드에 설정한 값이,
+// 로컬에서는 .env 파일의 값이 사용됩니다.
 const pool = new Pool({
-  user: 'postgres',
-  host: 'localhost',
-  database: 'locallink_db',
-  password: '8773', // 본인의 PostgreSQL 비밀번호
-  port: 5432,
+  user: process.env.DB_USER,
+  host: process.env.DB_HOST,
+  database: process.env.DB_DATABASE,
+  password: process.env.DB_PASSWORD,
+  port: process.env.DB_PORT,
+  // Render와 같은 클라우드 DB에 연결하기 위한 필수 SSL 옵션
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 module.exports = {
-  // 기존의 간단한 쿼리용 함수 (다른 파일들에서 사용)
   query: (text, params) => pool.query(text, params),
-  // 트랜잭션 처리를 위해 pool 객체를 직접 내보내도록 추가
   pool: pool 
 };
