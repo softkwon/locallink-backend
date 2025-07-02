@@ -1,6 +1,6 @@
 // routes/users.js (최종본)
 const express = require('express');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');    // 토큰 해석을 위해 추가   
 const db = require('../db');
 const authMiddleware = require('../middleware/authMiddleware');
