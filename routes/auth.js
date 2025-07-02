@@ -1,6 +1,6 @@
 // routes/auth.js (로그인 기능 추가 최종본)
 const express = require('express');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 const crypto = require('crypto'); // 토큰 및 난수 생성을 위한 내장 모듈
