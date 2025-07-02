@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');    // 토큰 해석을 위해 추가
 const db = require('../db');
 const authMiddleware = require('../middleware/authMiddleware');
 const multer = require('multer');
-const sharp = require('sharp');
+const sharp = require('sharp'); 
 const path = require('path');
 const fs = require('fs');
 
