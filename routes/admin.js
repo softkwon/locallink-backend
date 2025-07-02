@@ -2,7 +2,6 @@
 const express = require('express');
 const { stringify } = require('csv-stringify/sync'); // ★★★ csv-stringify 불러오기 ★★★
 const { parse } = require('csv-parse/sync'); // 파일 상단에 csv-parse/sync 추가
-const csv = require('csv-parser'); // ★★★ csv-parser 불러오기 ★★★
 const stream = require('stream');  // ★★★ stream 불러오기 ★★★
 const multer = require('multer'); // ★★★ multer 불러오기 ★★★
 const fs = require('fs'); // ★★★ 파일 시스템 모듈 불러오기 ★★★
