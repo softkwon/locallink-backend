@@ -232,7 +232,11 @@ router.post('/request-password-reset', async (req, res) => {
 });
 
 
-// POST /api/auth/reset-password - 비밀번호 최종 재설정
+/**
+ * 파일명: routes/auth.js
+ * 수정 위치: POST /api/auth/reset-password
+ * 수정 일시: 2025-07-03 15:11
+ */
 router.post('/reset-password', async (req, res) => {
     const { token, password, passwordConfirm } = req.body;
 
@@ -243,35 +247,31 @@ router.post('/reset-password', async (req, res) => {
         return res.status(400).json({ success: false, message: '비밀번호가 일치하지 않습니다.' });
     }
 
-    const client = await db.pool.connect();
     try {
-        await client.query('BEGIN');
+        // ★★★ 1. 사용자가 보내온 원본 토큰을 똑같이 암호화합니다. ★★★
+        const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
 
-        // 1. 토큰 유효성 검증
-        const resetQuery = 'SELECT * FROM password_resets WHERE token = $1 AND expires_at > NOW()';
-        const resetResult = await client.query(resetQuery, [token]);
+        // ★★★ 2. 암호화된 토큰으로 DB의 users 테이블을 검색합니다. ★★★
+        const userQuery = 'SELECT * FROM users WHERE reset_token = $1 AND reset_token_expires > NOW()';
+        const userResult = await db.query(userQuery, [hashedToken]);
 
-        if (resetResult.rows.length === 0) {
+        if (userResult.rows.length === 0) {
             return res.status(400).json({ success: false, message: '유효하지 않거나 만료된 토큰입니다.' });
         }
-        const userId = resetResult.rows[0].user_id;
+        const user = userResult.rows[0];
 
-        // 2. 새 비밀번호 해싱 및 users 테이블 업데이트
-        const hashedPassword = await bcrypt.hash(password, 10);
-        await client.query('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, userId]);
+        // 3. 새 비밀번호를 해싱하여 users 테이블에 업데이트합니다.
+        const newHashedPassword = await bcrypt.hash(password, 10);
+        await db.query('UPDATE users SET password = $1 WHERE id = $2', [newHashedPassword, user.id]);
 
-        // 3. 사용된 토큰 삭제
-        await client.query('DELETE FROM password_resets WHERE token = $1', [token]);
+        // ★★★ 4. 사용된 토큰 정보를 users 테이블에서 초기화합니다. ★★★
+        await db.query('UPDATE users SET reset_token = NULL, reset_token_expires = NULL WHERE id = $1', [user.id]);
 
-        await client.query('COMMIT');
         res.status(200).json({ success: true, message: '비밀번호가 성공적으로 변경되었습니다. 다시 로그인해주세요.' });
 
     } catch (error) {
-        await client.query('ROLLBACK');
         console.error("비밀번호 재설정 에러:", error);
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
-    } finally {
-        client.release();
     }
 });
 
