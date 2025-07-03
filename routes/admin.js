@@ -813,52 +813,28 @@ router.delete(
     }
 );
 
-// DELETE /api/admin/programs/:id - 특정 프로그램 삭제
-router.delete(
+/**
+ * 파일명: routes/admin.js
+ * 수정 위치: 특정 프로그램 조회 API 추가
+ * 수정 일시: 2025-07-03 16:59
+ */
+
+// GET /api/admin/programs/:id - 특정 프로그램 정보 조회
+router.get(
     '/programs/:id',
     authMiddleware,
-    checkPermission(['super_admin',]),
+    checkPermission(['super_admin', 'content_manager']),
     async (req, res) => {
         const { id } = req.params;
-        const client = await db.pool.connect();
         try {
-            await client.query('BEGIN');
-
-            // 1. 삭제하기 전에, 어떤 이미지 파일들을 지워야 하는지 DB에서 조회합니다.
-            const programRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
-            if (programRes.rows.length > 0 && programRes.rows[0].content) {
-                const content = programRes.rows[0].content;
-                content.forEach(section => {
-                    if (section.images && Array.isArray(section.images)) {
-                        section.images.forEach(filename => {
-                            const filePath = path.join(__dirname, '..', 'public', 'uploads', 'programs', filename);
-                            // 파일이 존재하면 삭제합니다.
-                            if (fs.existsSync(filePath)) {
-                                fs.unlinkSync(filePath);
-                            }
-                        });
-                    }
-                });
+            const { rows } = await db.query('SELECT * FROM esg_programs WHERE id = $1', [id]);
+            if (rows.length === 0) {
+                return res.status(404).json({ success: false, message: '해당 프로그램을 찾을 수 없습니다.' });
             }
-
-            // 2. 관련 규칙들을 삭제합니다. (이전과 동일)
-            const programCodeRes = await client.query('SELECT program_code FROM esg_programs WHERE id = $1', [id]);
-            if (programCodeRes.rows.length > 0) {
-                await client.query('DELETE FROM strategy_rules WHERE recommended_program_code = $1', [programCodeRes.rows[0].program_code]);
-            }
-            
-            // 3. 프로그램 자체를 DB에서 삭제합니다.
-            const { rowCount } = await db.query('DELETE FROM esg_programs WHERE id = $1', [id]);
-            if (rowCount === 0) return res.status(404).json({ success: false, message: '프로그램을 찾을 수 없습니다.' });
-
-            await client.query('COMMIT');
-            res.status(200).json({ success: true, message: '프로그램이 성공적으로 삭제되었습니다.' });
+            res.status(200).json({ success: true, program: rows[0] });
         } catch (error) {
-            await client.query('ROLLBACK');
-            console.error('프로그램 삭제 에러:', error);
-            res.status(500).json({ success: false, message: '서버 에러' });
-        } finally {
-            client.release();
+            console.error('프로그램 상세 조회 에러:', error);
+            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
         }
     }
 );
