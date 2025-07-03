@@ -8,6 +8,7 @@ const multer = require('multer');
 const sharp = require('sharp'); 
 const path = require('path');
 const fs = require('fs');
+const s3 = require('../config/s3-client');
 
 // multer 인스턴스 생성 (메모리 저장 방식 사용)
 const storage = multer.memoryStorage();
@@ -70,24 +71,35 @@ router.post('/me/profile-image', authMiddleware, upload.single('profileImage'), 
     }
 
     try {
-        const newFilename = `profile-${userId}-${Date.now()}.jpeg`;
-        const outputPath = path.join(__dirname, '..', 'public', 'uploads', 'profiles', newFilename);
-        const outputDir = path.dirname(outputPath);
-        if (!fs.existsSync(outputDir)) {
-            fs.mkdirSync(outputDir, { recursive: true });
-        }
-
-        await sharp(req.file.buffer)
-            .resize(100, 100, { fit: 'cover' }) // 100x100 픽셀로 리사이즈
+        // 1. Sharp를 이용해 이미지를 리사이징하고 jpeg로 변환합니다.
+        const processedImageBuffer = await sharp(req.file.buffer)
+            .resize(100, 100, { fit: 'cover' })
             .toFormat('jpeg', { quality: 90 })
-            .toFile(outputPath);
-        
-        const fileUrl = `/uploads/profiles/${newFilename}`;
+            .toBuffer();
 
-        // DB에 파일 URL 업데이트
+        // 2. S3에 업로드하기 위한 파라미터를 설정합니다.
+        const uploadParams = {
+            Bucket: process.env.AWS_S3_BUCKET_NAME,
+            Key: `profiles/profile-${userId}-${Date.now()}.jpeg`, // S3에 저장될 파일 경로 및 이름
+            Body: processedImageBuffer,                         // 처리된 이미지 데이터
+            ContentType: 'image/jpeg',                          // 파일 타입
+            ACL: 'public-read'                                  // 공개 읽기 권한
+        };
+
+        // 3. S3에 이미지를 업로드합니다.
+        const s3UploadResult = await s3.upload(uploadParams).promise();
+
+        // 4. 업로드된 이미지의 최종 URL을 가져옵니다.
+        const fileUrl = s3UploadResult.Location;
+
+        // 5. DB에 최종 S3 URL을 업데이트합니다.
         await db.query('UPDATE users SET profile_image_url = $1 WHERE id = $2', [fileUrl, userId]);
 
-        res.status(200).json({ success: true, message: '프로필 이미지가 변경되었습니다.', profileImageUrl: fileUrl });
+        res.status(200).json({ 
+            success: true, 
+            message: '프로필 이미지가 변경되었습니다.', 
+            profileImageUrl: fileUrl 
+        });
 
     } catch (error) {
         console.error('프로필 이미지 업로드 에러:', error);
