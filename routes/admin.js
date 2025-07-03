@@ -4,14 +4,18 @@ const { stringify } = require('csv-stringify/sync'); // ★★★ csv-stringify 
 const { parse } = require('csv-parse/sync'); // 파일 상단에 csv-parse/sync 추가
 const stream = require('stream');  // ★★★ stream 불러오기 ★★★
 const multer = require('multer'); // ★★★ multer 불러오기 ★★★
-const fs = require('fs'); // ★★★ 파일 시스템 모듈 불러오기 ★★★
-const path = require('path');   // ★★★ path 불러오기 ★★★
 const sharp = require('sharp'); // ★★★ sharp 라이브러리 불러오기 ★★★
 const db = require('../db');
 const authMiddleware = require('../middleware/authMiddleware');
 const checkPermission = require('../middleware/permissionMiddleware'); // 새로 만든 권한 미들웨어
-
+const { uploadImageToS3, deleteImageFromS3 } = require('../helpers/s3-helper');
 const router = express.Router();
+
+//지워도 된다는 함수들 체크필요//
+const fs = require('fs'); // ★★★ 파일 시스템 모듈 불러오기 ★★★
+const path = require('path');   // ★★★ path 불러오기 ★★★
+
+
 
 // --- ▼▼▼ 파일 업로드 설정을 '메모리 저장소' 하나로 통일합니다. ▼▼▼ ---
 const storage = multer.memoryStorage(); // 파일을 디스크가 아닌 메모리에 버퍼 형태로 저장
@@ -615,14 +619,13 @@ router.post(
     '/programs',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
-    upload.array('newImages'), // 'newImages' 필드명으로 전송된 파일들을 먼저 처리
+    upload.array('newImages'), 
     async (req, res) => {
     
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
 
-        // ★★★ 1. imageCounts를 req.body에서 받아옵니다. ★★★
         const { 
             title, program_code, esg_category, program_overview, risk_text, risk_description,
             content, economic_effects, related_links, opportunity_effects, service_regions, imageCounts
@@ -633,36 +636,29 @@ router.post(
         }
         
         const parsedContent = JSON.parse(content);
-        const parsedImageCounts = imageCounts ? JSON.parse(imageCounts) : []; // imageCounts도 파싱
+        const parsedImageCounts = imageCounts ? JSON.parse(imageCounts) : [];
         
-        const uploadedFilenames = [];
+        // ★★★ 1. 모든 새 이미지를 S3에 먼저 업로드하고 URL 목록을 받습니다. ★★★
+        const uploadedUrls = [];
         if (req.files && req.files.length > 0) {
             for (const file of req.files) {
-                const newFilename = `program-${Date.now()}-${file.originalname.replace(/\s/g, '_')}`;
-                const outputPath = path.join(__dirname, '..', 'public', 'uploads', 'programs', newFilename);
-                const outputDir = path.dirname(outputPath);
-                if (!fs.existsSync(outputDir)) {
-                    fs.mkdirSync(outputDir, { recursive: true });
-                }
-                await sharp(file.buffer)
-                    .resize({ width: 800, fit: 'inside', withoutEnlargement: true })
-                    .toFormat('jpeg', { quality: 80 })
-                    .toFile(outputPath);
-                uploadedFilenames.push(newFilename);
+                const imageUrl = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
+                uploadedUrls.push(imageUrl);
             }
         }
         
-        // ★★★ 2. 이미지를 올바른 섹션에 분배하는 새 로직 ★★★
-        let filePointer = 0;
+        // ★★★ 2. 업로드된 S3 URL을 content 데이터에 올바르게 분배합니다. ★★★
+        let urlPointer = 0;
         for (let i = 0; i < parsedContent.length; i++) {
             const countForThisSection = parsedImageCounts[i] || 0;
             if (countForThisSection > 0) {
-                const imagesForThisSection = uploadedFilenames.slice(filePointer, filePointer + countForThisSection);
+                const imagesForThisSection = uploadedUrls.slice(urlPointer, urlPointer + countForThisSection);
                 if (!parsedContent[i].images) {
                     parsedContent[i].images = [];
                 }
+                // 이제 파일명이 아닌 전체 S3 URL이 저장됩니다.
                 parsedContent[i].images.push(...imagesForThisSection);
-                filePointer += countForThisSection;
+                urlPointer += countForThisSection;
             }
         }
         
@@ -699,7 +695,7 @@ router.put(
     '/programs/:id', 
     authMiddleware, 
     checkPermission(['super_admin', 'content_manager']),
-    upload.array('newImages'), // 새로 추가되는 이미지는 'newImages' 필드로 받음
+    upload.array('newImages'),
     async (req, res) => {
         
     const { id } = req.params;
@@ -714,21 +710,20 @@ router.put(
 
         const parsedContent = JSON.parse(content);
         
-        const newImageFilenames = [];
+        // ★★★ 새로 업로드된 이미지들을 S3에 올리고 URL 목록을 받습니다. ★★★
+        const newImageUrls = [];
         if (req.files && req.files.length > 0) {
             for (const file of req.files) {
-                const newFilename = `program-${Date.now()}-${file.originalname.replace(/\s/g, '_')}`;
-                const outputPath = path.join(__dirname, '..', 'public', 'uploads', 'programs', newFilename);
-                const outputDir = path.dirname(outputPath);
-                if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-                await sharp(file.buffer).resize({ width: 800 }).toFormat('jpeg').toFile(outputPath);
-                newImageFilenames.push(newFilename);
+                const imageUrl = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
+                newImageUrls.push(imageUrl);
             }
         }
         
-        if (parsedContent.length > 0 && newImageFilenames.length > 0) {
+        // ★★★ 새 이미지 URL들을 content 데이터의 첫 번째 섹션에 추가합니다. ★★★
+        // (기존 로직과 동일하게 첫 번째 섹션에 추가, 필요시 이 로직은 프론트에서 보내주는 정보에 따라 변경 가능)
+        if (parsedContent.length > 0 && newImageUrls.length > 0) {
             if (!parsedContent[0].images) parsedContent[0].images = [];
-            parsedContent[0].images.push(...newImageFilenames);
+            parsedContent[0].images.push(...newImageUrls);
         }
 
         const query = `
@@ -761,26 +756,62 @@ router.put(
 });
 
 // GET /api/admin/programs/:id - 특정 프로그램 하나만 조회
-router.get('/programs/:id', authMiddleware, async (req, res) => {
-    const { id } = req.params;
+/**
+ * 파일명: routes/admin.js
+ * 수정 위치: DELETE /api/admin/programs/:id
+ * 수정 일시: 2025-07-03 10:27
+ */
+router.delete(
+    '/programs/:id',
+    authMiddleware,
+    checkPermission(['super_admin']),
+    async (req, res) => {
+        const { id } = req.params;
+        const client = await db.pool.connect();
+        try {
+            await client.query('BEGIN');
 
-    try {
-        const query = 'SELECT * FROM esg_programs WHERE id = $1';
-        const { rows } = await db.query(query, [id]);
+            // ★★★ 1. DB에서 프로그램 정보를 읽어와 삭제할 S3 이미지 URL들을 찾습니다. ★★★
+            const programRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
+            if (programRes.rows.length > 0 && programRes.rows[0].content) {
+                const content = programRes.rows[0].content;
+                const imagesToDelete = [];
+                content.forEach(section => {
+                    if (section.images && Array.isArray(section.images)) {
+                        // S3 URL만 추출하여 리스트에 추가
+                        section.images.forEach(imageUrl => {
+                            if (typeof imageUrl === 'string' && imageUrl.startsWith('https')) {
+                                imagesToDelete.push(imageUrl);
+                            }
+                        });
+                    }
+                });
+                
+                // ★★★ 2. S3에서 해당 이미지들을 삭제합니다. ★★★
+                if (imagesToDelete.length > 0) {
+                    await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
+                }
+            }
+            
+            // 3. 관련 규칙 및 프로그램 자체를 DB에서 삭제합니다. (기존 로직과 동일)
+            const programCodeRes = await client.query('SELECT program_code FROM esg_programs WHERE id = $1', [id]);
+            if (programCodeRes.rows.length > 0) {
+                await client.query('DELETE FROM strategy_rules WHERE recommended_program_code = $1', [programCodeRes.rows[0].program_code]);
+            }
+            const { rowCount } = await db.query('DELETE FROM esg_programs WHERE id = $1', [id]);
+            if (rowCount === 0) return res.status(404).json({ success: false, message: '프로그램을 찾을 수 없습니다.' });
 
-        // DB에서 해당 ID의 프로그램을 찾지 못한 경우
-        if (rows.length === 0) {
-            return res.status(404).json({ success: false, message: '해당 프로그램을 찾을 수 없습니다.' });
+            await client.query('COMMIT');
+            res.status(200).json({ success: true, message: '프로그램이 성공적으로 삭제되었습니다.' });
+        } catch (error) {
+            await client.query('ROLLBACK');
+            console.error('프로그램 삭제 에러:', error);
+            res.status(500).json({ success: false, message: '서버 에러' });
+        } finally {
+            client.release();
         }
-
-        // 정상적으로 찾은 경우, 프로그램 정보를 반환
-        res.status(200).json({ success: true, program: rows[0] });
-
-    } catch (error) {
-        console.error('단일 프로그램 조회 에러:', error);
-        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
-});
+);
 
 // DELETE /api/admin/programs/:id - 특정 프로그램 삭제
 router.delete(
@@ -866,36 +897,33 @@ router.patch('/programs/:id/status', authMiddleware, checkPermission(['super_adm
 
 
 // POST /api/admin/upload-program-images - 프로그램 이미지 업로드
+/**
+ * 파일명: routes/admin.js
+ * 수정 위치: POST /api/admin/upload-program-images
+ * 수정 일시: 2025-07-03 10:35
+ */
 router.post(
     '/upload-program-images',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
-    // ★★★ .single()이 아닌 .array()를 사용하여 여러 파일을 받습니다. ★★★
-    upload.array('programImages', 10), async (req, res) => {
+    upload.array('programImages', 10), 
+    async (req, res) => {
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ success: false, message: '업로드된 파일이 없습니다.' });
+        }
         try {
-            // .array()를 사용하면 req.files에 파일 배열이 들어옵니다.
-            if (!req.files || req.files.length === 0) {
-                return res.status(400).json({ success: false, message: '업로드된 파일이 없습니다.' });
-            }
-
-            // req.files 배열의 각 파일에 대해 최적화 작업을 수행합니다.
-            const filenames = [];
-            await Promise.all(req.files.map(async (file) => {
-                const newFilename = `program-${Date.now()}-${Math.round(Math.random() * 1E9)}.jpeg`;
-                const outputPath = path.join(__dirname, '..', 'public', 'uploads', 'programs', newFilename);
-
-                await sharp(file.buffer)
-                    .resize({ width: 800, fit: 'inside' })
-                    .toFormat('jpeg', { quality: 80 })
-                    .toFile(outputPath);
-                
-                filenames.push(newFilename);
-            }));
+            // ★★★ 여러 파일을 동시에 S3에 업로드하고, 완료되면 URL 목록을 받습니다. ★★★
+            const imageUrls = await Promise.all(
+                req.files.map(file => 
+                    uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId)
+                )
+            );
             
+            // ★★★ 성공 시, 로컬 파일명이 아닌 최종 S3 URL 목록을 반환합니다. ★★★
             res.status(200).json({ 
                 success: true, 
-                message: '이미지가 성공적으로 최적화 및 업로드되었습니다.',
-                filenames: filenames // 처리된 모든 파일의 이름 목록을 반환
+                message: "이미지가 성공적으로 업로드되었습니다.", 
+                imageUrls: imageUrls 
             });
 
         } catch (error) {
@@ -1713,34 +1741,35 @@ router.put(
 );
 
 // --- ▼▼▼ 페이지 콘텐츠 이미지 업로드 API 추가 ▼▼▼ ---
+/**
+ * 파일명: routes/admin.js
+ * 수정 위치: POST /api/admin/upload-page-images
+ * 수정 일시: 2025-07-03 10:37
+ */
 router.post(
     '/upload-page-images',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
-    upload.array('pageImages', 10), // multer가 파일을 메모리에 받음
+    upload.array('pageImages', 10),
     async (req, res) => {
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ success: false, message: '업로드된 파일이 없습니다.' });
+        }
         try {
-            if (!req.files || req.files.length === 0) {
-                return res.status(400).json({ success: false, message: '업로드된 파일이 없습니다.' });
-            }
-
-            const filenames = [];
-            // 여러 파일을 동시에 처리
-            await Promise.all(req.files.map(async (file) => {
-                const newFilename = `page-${Date.now()}-${Math.round(Math.random() * 1E9)}.jpeg`;
-                // ★★★ 저장 경로를 'pages' 폴더로 명확하게 지정합니다. ★★★
-                const outputPath = path.join(__dirname, '..', 'public', 'uploads', 'pages', newFilename);
-
-                // sharp를 사용하여 이미지 처리 후 저장
-                await sharp(file.buffer)
-                    .resize({ width: 1200, fit: 'inside' }) // 메인 페이지 이미지는 좀 더 크게
-                    .toFormat('jpeg', { quality: 85 })
-                    .toFile(outputPath);
-                
-                filenames.push(newFilename);
-            }));
+            // ★★★ 여러 파일을 동시에 S3에 업로드하고, 완료되면 URL 목록을 받습니다. ★★★
+            const imageUrls = await Promise.all(
+                req.files.map(file => 
+                    uploadImageToS3(file.buffer, file.originalname, 'pages', req.user.userId)
+                )
+            );
             
-            res.status(200).json({ success: true, message: '이미지가 업로드되었습니다.', filenames: filenames });
+            // ★★★ 성공 시, 최종 S3 URL 목록을 반환합니다. ★★★
+            res.status(200).json({ 
+                success: true, 
+                message: "이미지가 성공적으로 업로드되었습니다.", 
+                imageUrls: imageUrls 
+            });
+
         } catch (error) {
             console.error('페이지 이미지 업로드 에러:', error);
             res.status(500).json({ success: false, message: '이미지 처리 중 서버 에러' });
@@ -1999,23 +2028,13 @@ router.post('/news', authMiddleware, checkPermission(['super_admin', 'content_ma
     try {
         const parsedContent = JSON.parse(content);
         
-        // 프론트에서 보낸 이미지 placeholder를 실제 파일 경로로 교체합니다.
+        // ★★★ S3 업로드 로직으로 수정 ★★★
         const finalContent = await Promise.all(parsedContent.map(async (section) => {
             const images = await Promise.all(section.images.map(async (placeholder) => {
                 const file = req.files.find(f => f.fieldname === placeholder);
                 if (file) {
-                    const newFilename = `news-${userId}-${Date.now()}-${file.originalname.replace(/\s/g, '_')}`;
-                    const outputPath = path.join(__dirname, '..', 'public', 'uploads', 'news', newFilename);
-                    const outputDir = path.dirname(outputPath);
-                    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-                    
-                    // sharp를 사용한 이미지 처리 (압축 및 변환)
-                    await sharp(file.buffer)
-                        .resize({ width: 1200, withoutEnlargement: true }) // 너비 1200px로 리사이즈
-                        .toFormat('jpeg', { quality: 85 }) // 품질 85%의 jpeg로 압축
-                        .toFile(outputPath);
-                    
-                    return `/uploads/news/${newFilename}`;
+                    // S3 헬퍼 함수를 호출하여 업로드하고 URL을 받습니다.
+                    return await uploadImageToS3(file.buffer, file.originalname, 'news', userId);
                 }
                 return null;
             }));
@@ -2045,33 +2064,24 @@ router.put('/news/:id', authMiddleware, checkPermission(['super_admin', 'content
     try {
         const parsedContent = JSON.parse(content);
         
-        // 프론트에서 보낸 이미지 placeholder를 실제 파일 경로로 교체
         const finalContent = await Promise.all(parsedContent.map(async (section) => {
-            // section.images에는 기존 이미지 URL과 새 이미지의 placeholder가 모두 들어있음
             const updatedImages = await Promise.all(section.images.map(async (imageOrPlaceholder) => {
-                // 이미 업로드된 URL인 경우 그대로 반환
-                if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('/uploads')) {
+                // ★★★ 이미 업로드된 S3 URL인 경우 그대로 반환합니다. ★★★
+                if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('https')) {
                     return imageOrPlaceholder;
                 }
                 
-                // 새로운 파일(placeholder)인 경우, 업로드하고 URL 반환
+                // ★★★ 새로운 파일(placeholder)인 경우, S3에 업로드하고 URL을 반환합니다. ★★★
                 const file = req.files.find(f => f.fieldname === imageOrPlaceholder);
                 if (file) {
-                    const newFilename = `news-${req.user.userId}-${Date.now()}-${file.originalname.replace(/\s/g, '_')}`;
-                    const outputPath = path.join(__dirname, '..', 'public', 'uploads', 'news', newFilename);
-                    const outputDir = path.dirname(outputPath);
-                    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-                    
-                    await sharp(file.buffer).resize(800).toFormat('jpeg').toFile(outputPath);
-                    return `/uploads/news/${newFilename}`;
+                    return await uploadImageToS3(file.buffer, file.originalname, 'news', req.user.userId);
                 }
-                return null; // 해당하는 파일이 없는 경우
+                return null;
             }));
             
-            return { ...section, images: updatedImages.filter(Boolean) }; // null 값 제거
+            return { ...section, images: updatedImages.filter(Boolean) };
         }));
 
-        // DB에 최종 업데이트
         const query = `
             UPDATE news_posts 
             SET title = $1, content = $2, category = $3, status = $4, updated_at = NOW() 
@@ -2122,13 +2132,32 @@ router.patch('/news/:id/status', authMiddleware, checkPermission(['super_admin']
 router.delete('/news/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
     const { id } = req.params;
     try {
+        // 1. DB에서 삭제할 게시물의 이미지 URL들을 가져옵니다.
+        const postRes = await db.query('SELECT content FROM news_posts WHERE id = $1', [id]);
+        if (postRes.rows.length > 0 && postRes.rows[0].content) {
+            const content = postRes.rows[0].content;
+            const imagesToDelete = [];
+            content.forEach(section => {
+                if (section.images && Array.isArray(section.images)) {
+                    imagesToDelete.push(...section.images);
+                }
+            });
+
+            // 2. S3에서 해당 이미지들을 삭제합니다.
+            if (imagesToDelete.length > 0) {
+                await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
+            }
+        }
+
+        // 3. DB에서 게시물 데이터를 삭제합니다.
         const { rowCount } = await db.query('DELETE FROM news_posts WHERE id = $1', [id]);
         if (rowCount === 0) {
             return res.status(404).json({ success: false, message: '삭제할 게시물을 찾을 수 없습니다.' });
         }
+
         res.status(200).json({ success: true, message: '게시물이 성공적으로 삭제되었습니다.' });
     } catch (error) {
-        console.error("소식 삭제 에러:", error);
+        console.error('소식 삭제 에러:', error);
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
 });
@@ -2139,28 +2168,19 @@ router.post('/upload-news-image', authMiddleware, checkPermission(['super_admin'
         return res.status(400).json({ success: false, message: '업로드된 파일이 없습니다.' });
     }
     try {
-        const uploadedFilenames = [];
-        for (const file of req.files) {
-            // 파일 이름이 중복되지 않도록 고유한 이름 생성
-            const newFilename = `news-${Date.now()}-${file.originalname.replace(/\s/g, '_')}`;
-            const outputPath = path.join(__dirname, '..', 'public', 'uploads', 'news', newFilename);
-            const outputDir = path.dirname(outputPath);
-
-            // 디렉토리가 없으면 생성
-            if (!fs.existsSync(outputDir)) {
-                fs.mkdirSync(outputDir, { recursive: true });
-            }
-
-            // 이미지를 리사이징하고 저장
-            await sharp(file.buffer)
-                .resize(800, null, { fit: 'inside', withoutEnlargement: true })
-                .toFormat('jpeg', { quality: 85 })
-                .toFile(outputPath);
-            
-            uploadedFilenames.push(`/uploads/news/${newFilename}`);
-        }
-        // 성공 시, 저장된 파일들의 URL 목록을 반환
-        res.status(200).json({ success: true, message: "이미지가 성공적으로 업로드되었습니다.", imageUrls: uploadedFilenames });
+        // ★★★ 여러 파일을 동시에 S3에 업로드하고, 완료되면 URL 목록을 받습니다. ★★★
+        const imageUrls = await Promise.all(
+            req.files.map(file => 
+                uploadImageToS3(file.buffer, file.originalname, 'news', req.user.userId)
+            )
+        );
+        
+        // ★★★ 성공 시, 로컬 경로가 아닌 최종 S3 URL 목록을 반환합니다. ★★★
+        res.status(200).json({ 
+            success: true, 
+            message: "이미지가 성공적으로 업로드되었습니다.", 
+            imageUrls: imageUrls 
+        });
 
     } catch (error) {
         console.error("뉴스 이미지 처리 에러:", error);
@@ -2193,28 +2213,20 @@ router.put('/site-content', authMiddleware, checkPermission(['super_admin']), up
     try {
         await client.query('BEGIN');
 
-        // 1. 메인 페이지 콘텐츠의 새 이미지를 업로드하고 URL을 매핑합니다.
         const parsedMainContent = JSON.parse(main_page_content);
         
         const finalMainContent = await Promise.all(parsedMainContent.map(async (section) => {
             const updatedImages = await Promise.all(section.images.map(async (imageOrPlaceholder) => {
-                // 기존 이미지 URL인 경우 그대로 반환
-                if (typeof imageOrPlaceholder === 'object' && imageOrPlaceholder.file.startsWith('/uploads')) {
+                // 기존 S3 URL인 경우
+                if (typeof imageOrPlaceholder === 'object' && imageOrPlaceholder.file.startsWith('https')) {
                     return imageOrPlaceholder;
                 }
                 
-                // 새로운 파일(placeholder)인 경우, 업로드하고 URL 반환
+                // 새로운 파일인 경우 S3에 업로드
                 const file = newImageFiles.find(f => f.fieldname === imageOrPlaceholder.file);
                 if (file) {
-                    const newFilename = `page-${Date.now()}-${file.originalname.replace(/\s/g, '_')}`;
-                    const outputPath = path.join(__dirname, '..', 'public', 'uploads', 'pages', newFilename);
-                    const outputDir = path.dirname(outputPath);
-                    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-                    
-                    await sharp(file.buffer).resize({ width: 1200, withoutEnlargement: true }).toFormat('jpeg', { quality: 85 }).toFile(outputPath);
-                    
-                    // 프론트엔드가 기대하는 { file: '경로' } 형태로 반환
-                    return { file: `/uploads/pages/${newFilename}` };
+                    const newImageUrl = await uploadImageToS3(file.buffer, file.originalname, 'pages', req.user.userId);
+                    return { file: newImageUrl }; // 프론트엔드가 기대하는 { file: 'URL' } 형태로 반환
                 }
                 return null;
             }));
@@ -2222,7 +2234,7 @@ router.put('/site-content', authMiddleware, checkPermission(['super_admin']), up
             return { ...section, images: updatedImages.filter(Boolean) };
         }));
 
-        // 2. site_content 테이블을 업데이트합니다.
+        // DB 업데이트 로직은 기존과 동일
         const upsertQuery = `
             INSERT INTO site_content (id, content_key, content, content_value, terms_of_service, privacy_policy, marketing_consent_text, updated_at) 
             VALUES (1, 'main_page_sections', $1, $2, $3, $4, $5, NOW())
@@ -2236,7 +2248,6 @@ router.put('/site-content', authMiddleware, checkPermission(['super_admin']), up
         `;
         await client.query(upsertQuery, [JSON.parse(footer_info), JSON.stringify(finalMainContent), terms_of_service, privacy_policy, marketing_consent_text]);
         
-        // 3. 관련 사이트 링크 업데이트
         await client.query('DELETE FROM related_sites');
         for (const site of JSON.parse(related_sites)) {
             if (site.name && site.url) {

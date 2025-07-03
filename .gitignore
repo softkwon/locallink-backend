@@ -1,0 +1,7 @@
+# .gitignore 파일
+
+# 비밀 정보 파일
+.env
+
+# 의존성 모듈 폴더
+node_modules

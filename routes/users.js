@@ -142,17 +142,24 @@ router.delete('/me', authMiddleware, async (req, res) => {
             return res.status(400).json({ success: false, message: '비밀번호를 입력해주세요.' });
         }
 
-        const userResult = await db.query('SELECT password FROM users WHERE id = $1', [userId]);
+        // ★★★ 1. 삭제하기 전에, S3에서 지워야 할 이미지 URL과 비밀번호를 DB에서 가져옵니다. ★★★
+        const userResult = await db.query('SELECT password, profile_image_url FROM users WHERE id = $1', [userId]);
         if (userResult.rows.length === 0) {
             return res.status(404).json({ success: false, message: '사용자 정보를 찾을 수 없습니다.' });
         }
         
-        const isPasswordValid = await bcrypt.compare(password, userResult.rows[0].password);
+        const user = userResult.rows[0];
+        const isPasswordValid = await bcrypt.compare(password, user.password);
         if (!isPasswordValid) {
             return res.status(401).json({ success: false, message: '비밀번호가 올바르지 않습니다.' });
         }
 
-        // 실제 DB에서 사용자 데이터를 삭제합니다.
+        // ★★★ 2. S3에서 프로필 이미지를 삭제합니다. ★★★
+        if (user.profile_image_url) {
+            await deleteImageFromS3(user.profile_image_url);
+        }
+
+        // 3. 실제 DB에서 사용자 데이터를 삭제합니다.
         await db.query('DELETE FROM users WHERE id = $1', [userId]);
         
         res.status(200).json({ success: true, message: '회원 탈퇴가 성공적으로 처리되었습니다.' });
