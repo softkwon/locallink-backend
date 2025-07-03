@@ -3,6 +3,9 @@
  * 기능: AWS S3 이미지 업로드 및 삭제를 처리하는 헬퍼 함수들
  * 수정 일시: 2025-07-03 10:48
  */
+console.log("★★★ S3 Helper v2 (ACL Removed) is running! ★★★");
+
+
 const s3 = require('../config/s3-client');
 const sharp = require('sharp');
 const path = require('path');
@@ -30,7 +33,6 @@ async function uploadImageToS3(fileBuffer, originalFilename, folder, userId) {
             Key: `${folder}/${filename}`,
             Body: processedImageBuffer,
             ContentType: 'image/jpeg'
-            // ACL: 'public-read'  <-- 이 줄을 완전히 삭제합니다.
         };
 
         const result = await s3.upload(uploadParams).promise();
