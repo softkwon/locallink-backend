@@ -2032,32 +2032,57 @@ router.post('/news', authMiddleware, checkPermission(['super_admin', 'content_ma
 });
 
 // PUT /api/admin/news/:id - 게시물 수정
-// ★★★ PUT /api/admin/news/:id - 기존 소식 수정 ★★★
+/**
+ * 파일명: routes/admin.js
+ * 수정 위치: PUT /api/admin/news/:id
+ * 수정 일시: 2025-07-04 02:15
+ */
 router.put('/news/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), upload.any(), async (req, res) => {
     const { id } = req.params;
     const { title, category, status, content } = req.body;
     
     try {
+        // --- 1. DB에서 수정 전의 기존 이미지 URL 목록을 미리 가져옵니다. ---
+        const oldPostRes = await db.query('SELECT content FROM news_posts WHERE id = $1', [id]);
+        const oldImageUrls = new Set();
+        if (oldPostRes.rows.length > 0 && oldPostRes.rows[0].content) {
+            oldPostRes.rows[0].content.forEach(section => {
+                if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
+            });
+        }
+
         const parsedContent = JSON.parse(content);
         
         const finalContent = await Promise.all(parsedContent.map(async (section) => {
             const updatedImages = await Promise.all(section.images.map(async (imageOrPlaceholder) => {
-                // ★★★ 이미 업로드된 S3 URL인 경우 그대로 반환합니다. ★★★
-                if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('https')) {
+                // 이미 업로드된 URL인 경우 그대로 반환
+                if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('http')) {
                     return imageOrPlaceholder;
                 }
-                
-                // ★★★ 새로운 파일(placeholder)인 경우, S3에 업로드하고 URL을 반환합니다. ★★★
+                // 새로운 파일(placeholder)인 경우, S3에 업로드하고 URL 반환
                 const file = req.files.find(f => f.fieldname === imageOrPlaceholder);
                 if (file) {
                     return await uploadImageToS3(file.buffer, file.originalname, 'news', req.user.userId);
                 }
                 return null;
             }));
-            
             return { ...section, images: updatedImages.filter(Boolean) };
         }));
 
+        // --- 2. 수정 후의 최종 이미지 URL 목록과 비교하여 삭제된 이미지를 찾습니다. ---
+        const newImageUrls = new Set();
+        finalContent.forEach(section => {
+            if (section.images) section.images.forEach(imgUrl => newImageUrls.add(imgUrl));
+        });
+
+        const imagesToDelete = [...oldImageUrls].filter(url => !newImageUrls.has(url));
+        
+        // --- 3. S3에서 삭제된 이미지들을 제거합니다. ---
+        if (imagesToDelete.length > 0) {
+            await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
+        }
+
+        // 4. DB에 최종 데이터를 업데이트합니다.
         const query = `
             UPDATE news_posts 
             SET title = $1, content = $2, category = $3, status = $4, updated_at = NOW() 
