@@ -195,33 +195,34 @@ router.post('/check-email', async (req, res) => {
     }
 });
 
-// --- ▼▼▼ 1. 비밀번호 재설정 요청 API 추가 ▼▼▼ ---
+/**
+ * 파일명: routes/auth.js
+ * 수정 위치: POST /request-password-reset
+ * 수정 일시: 2025-07-03 14:55
+ */
 router.post('/request-password-reset', async (req, res) => {
     try {
         const { email } = req.body;
         const userResult = await db.query('SELECT * FROM users WHERE email = $1', [email]);
 
         if (userResult.rows.length > 0) {
-            // 1. 고유하고 안전한 재설정 토큰 생성
             const token = crypto.randomBytes(32).toString('hex');
             const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+            const expires = new Date(Date.now() + 15 * 60 * 1000); // 15분 후 만료
 
-            // 2. 토큰 만료 시간 설정 (예: 15분 후)
-            const expires = new Date(Date.now() + 15 * 60 * 1000);
-
-            // 3. DB에 해시된 토큰과 만료 시간 저장
+            // DB에 해시된 토큰과 만료 시간 저장
             await db.query('UPDATE users SET reset_token = $1, reset_token_expires = $2 WHERE email = $3', [hashedToken, expires, email]);
 
-            // 4. 사용자에게 실제 토큰이 포함된 재설정 링크를 이메일로 발송
-            // 나중에 프론트엔드 페이지를 만들면 그 주소로 변경해야 합니다.
-            const resetLink = `http://127.0.0.1:5500/main_login_reset-password.html?token=${token}`;
+            // ★★★ Render에 설정한 FRONTEND_URL 환경 변수를 사용하여 링크를 생성합니다. ★★★
+            const resetLink = `${process.env.FRONTEND_URL}/main_login_reset-password.html?token=${token}`;
+            
             const emailSubject = '[LocalLink] 비밀번호 재설정 요청';
             const emailHtml = `<p>비밀번호를 재설정하려면 아래 링크를 클릭해주세요. 이 링크는 15분간 유효합니다.</p><a href="${resetLink}">${resetLink}</a>`;
             
             await sendEmail(email, emailSubject, emailHtml);
         }
         
-        // 사용자가 존재하는지 여부를 알려주지 않기 위해, 항상 동일한 성공 메시지를 보냅니다.
+        // 사용자가 존재 여부를 알 수 없도록 항상 동일한 성공 메시지를 보냅니다.
         res.json({ success: true, message: '비밀번호 재설정 이메일을 발송했습니다. 메일함을 확인해주세요.' });
 
     } catch (error) {
