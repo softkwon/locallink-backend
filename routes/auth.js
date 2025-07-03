@@ -198,7 +198,7 @@ router.post('/check-email', async (req, res) => {
 /**
  * 파일명: routes/auth.js
  * 수정 위치: POST /request-password-reset
- * 수정 일시: 2025-07-03 14:55
+ * 수정 일시: 2025-07-03 16:11
  */
 router.post('/request-password-reset', async (req, res) => {
     try {
@@ -208,21 +208,21 @@ router.post('/request-password-reset', async (req, res) => {
         if (userResult.rows.length > 0) {
             const token = crypto.randomBytes(32).toString('hex');
             const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
-            const expires = new Date(Date.now() + 15 * 60 * 1000); // 15분 후 만료
+            const expires = new Date(Date.now() + 15 * 60 * 1000);
 
-            // DB에 해시된 토큰과 만료 시간 저장
+            // ★★★ 디버깅 로그 추가 ★★★
+            console.log('--- [1. TOKEN CREATED] ---');
+            console.log('DB에 저장될 Hashed Token:', hashedToken);
+
             await db.query('UPDATE users SET reset_token = $1, reset_token_expires = $2 WHERE email = $3', [hashedToken, expires, email]);
 
-            // ★★★ Render에 설정한 FRONTEND_URL 환경 변수를 사용하여 링크를 생성합니다. ★★★
             const resetLink = `${process.env.FRONTEND_URL}/main_login_reset-password.html?token=${token}`;
-            
             const emailSubject = '[LocalLink] 비밀번호 재설정 요청';
             const emailHtml = `<p>비밀번호를 재설정하려면 아래 링크를 클릭해주세요. 이 링크는 15분간 유효합니다.</p><a href="${resetLink}">${resetLink}</a>`;
             
             await sendEmail(email, emailSubject, emailHtml);
         }
         
-        // 사용자가 존재 여부를 알 수 없도록 항상 동일한 성공 메시지를 보냅니다.
         res.json({ success: true, message: '비밀번호 재설정 이메일을 발송했습니다. 메일함을 확인해주세요.' });
 
     } catch (error) {
