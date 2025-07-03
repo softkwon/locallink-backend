@@ -29,8 +29,8 @@ async function uploadImageToS3(fileBuffer, originalFilename, folder, userId) {
             Bucket: process.env.AWS_S3_BUCKET_NAME,
             Key: `${folder}/${filename}`,
             Body: processedImageBuffer,
-            ContentType: 'image/jpeg',
-            ACL: 'public-read'
+            ContentType: 'image/jpeg'
+            // ACL: 'public-read'  <-- 이 줄을 완전히 삭제합니다.
         };
 
         const result = await s3.upload(uploadParams).promise();
