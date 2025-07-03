@@ -1753,91 +1753,171 @@ router.post(
     }
 );
 
-// --- ▼▼▼ 협력사(Partners) 관리 API (CRUD) 추가 ▼▼▼ ---
-
-// GET /api/admin/partners - 모든 협력사 목록 조회
+/**
+ * 파일명: routes/admin.js
+ * 수정 위치: 협력사(Partners) 관리 API 전체
+ * 수정 일시: 2025-07-04 02:41
+ */
+// GET /api/admin/partners - 모든 협력사 목록 조회 (수정 없음)
 router.get(
     '/partners',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
     async (req, res) => {
         try {
-            const { rows } = await db.query('SELECT * FROM partners ORDER BY display_order ASC');
+            const { rows } = await db.query('SELECT * FROM partners ORDER BY id ASC');
             res.status(200).json({ success: true, partners: rows });
         } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
     }
 );
 
-// POST /api/admin/partners - 새 협력사 추가
+// POST /api/admin/partners - 새 협력사 추가 (S3 업로드 기능 포함)
 router.post(
     '/partners',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
+    upload.single('partnerLogo'), // 'partnerLogo' 필드로 이미지 파일을 받습니다.
     async (req, res) => {
-        const { name, logo_url, link_url } = req.body;
+        const { name, link_url } = req.body;
+        
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: '로고 이미지를 선택해주세요.' });
+        }
+
         try {
+            // 1. S3 헬퍼를 사용해 이미지를 업로드하고 최종 URL을 받습니다.
+            const logoUrl = await uploadImageToS3(req.file.buffer, req.file.originalname, 'partners', req.user.userId);
+
+            // 2. DB에 텍스트 정보와 S3 이미지 URL을 저장합니다.
             const query = 'INSERT INTO partners (name, logo_url, link_url) VALUES ($1, $2, $3) RETURNING id';
-            await db.query(query, [name, logo_url, link_url]);
+            await db.query(query, [name, logoUrl, link_url]);
+            
             res.status(201).json({ success: true, message: '새로운 협력사가 추가되었습니다.' });
-        } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
+        } catch (error) { 
+            console.error("협력사 추가 에러:", error);
+            res.status(500).json({ success: false, message: '서버 에러' }); 
+        }
     }
 );
 
-// PUT /api/admin/partners/:id - 특정 협력사 수정
+// PUT /api/admin/partners/:id - 특정 협력사 수정 (S3 업로드 기능 포함)
 router.put(
     '/partners/:id',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
+    upload.single('partnerLogo'), // 새 로고 파일이 있다면 'partnerLogo' 필드로 받습니다.
     async (req, res) => {
         const { id } = req.params;
-        const { name, logo_url, link_url } = req.body;
+        const { name, link_url, logo_url } = req.body; // logo_url은 새 파일이 없을 때의 기존 URL
+        let finalLogoUrl = logo_url;
+
         try {
-            const query = 'UPDATE partners SET name = $1, logo_url = $2, link_url = $3 WHERE id = $4 RETURNING id';
-            const { rowCount } = await db.query(query, [name, logo_url, link_url, id]);
+            // 1. 새로운 로고 파일이 함께 전송되었다면
+            if (req.file) {
+                // 1-1. 기존 로고가 있다면 S3에서 먼저 삭제합니다.
+                if (logo_url && logo_url.startsWith('http')) {
+                    await deleteImageFromS3(logo_url);
+                }
+                // 1-2. 새 로고를 S3에 업로드하고, 최종 URL을 업데이트합니다.
+                finalLogoUrl = await uploadImageToS3(req.file.buffer, req.file.originalname, 'partners', req.user.userId);
+            }
+            
+            // 2. DB 정보를 업데이트합니다.
+            const query = 'UPDATE partners SET name = $1, logo_url = $2, link_url = $3 WHERE id = $4';
+            const { rowCount } = await db.query(query, [name, finalLogoUrl, link_url, id]);
+            
             if (rowCount === 0) return res.status(404).json({ success: false, message: '항목을 찾을 수 없습니다.' });
             res.status(200).json({ success: true, message: '협력사 정보가 수정되었습니다.' });
-        } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
+
+        } catch (error) { 
+            console.error("협력사 수정 에러:", error);
+            res.status(500).json({ success: false, message: '서버 에러' }); 
+        }
     }
 );
 
-// DELETE /api/admin/partners/:id - 특정 협력사 삭제
+// DELETE /api/admin/partners/:id - 특정 협력사 삭제 (S3 삭제 기능 포함)
 router.delete(
     '/partners/:id',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
     async (req, res) => {
         const { id } = req.params;
-        // (참고: 실제 파일 시스템에서 로고 이미지 파일을 삭제하는 로직도 추가해야 합니다)
         try {
+            // 1. DB에서 삭제할 로고의 URL을 먼저 가져옵니다.
+            const logoRes = await db.query('SELECT logo_url FROM partners WHERE id = $1', [id]);
+            const logoUrlToDelete = logoRes.rows[0]?.logo_url;
+
+            // 2. DB에서 협력사 정보를 삭제합니다.
             const { rowCount } = await db.query('DELETE FROM partners WHERE id = $1', [id]);
             if (rowCount === 0) return res.status(404).json({ success: false, message: '항목을 찾을 수 없습니다.' });
-            res.status(200).json({ success: true, message: '협력사가 삭제되었습니다.' });
-        } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
-    }
-);
 
-// --- ▼▼▼ 협력사 로고 이미지 업로드 API 추가 ▼▼▼ ---
-router.post(
-    '/upload-partner-logo',
-    authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
-    uploadPartner.single('partnerLogo'), // 'partnerLogo' 필드명으로 파일 1개
-    (req, res) => {
-        try {
-            if (!req.file) {
-                return res.status(400).json({ success: false, message: '업로드된 파일이 없습니다.' });
+            // 3. DB 삭제 성공 후, S3에서 로고 이미지를 삭제합니다.
+            if (logoUrlToDelete && logoUrlToDelete.startsWith('http')) {
+                await deleteImageFromS3(logoUrlToDelete);
             }
-            // 최적화 로직은 제외하고, 파일 이름만 반환 (로고는 원본 유지)
-            res.status(200).json({ 
-                success: true, 
-                message: '로고가 성공적으로 업로드되었습니다.',
-                filename: req.file.filename // 저장된 파일명
-            });
-        } catch (error) {
-            res.status(500).json({ success: false, message: '이미지 업로드 중 서버 에러 발생' });
+            
+            res.status(200).json({ success: true, message: '협력사가 삭제되었습니다.' });
+        } catch (error) { 
+            console.error("협력사 삭제 에러:", error);
+            res.status(500).json({ success: false, message: '서버 에러' }); 
         }
     }
 );
+// --- ▼▼▼ 사이트 메타 정보(공유 미리보기) 관리 API ▼▼▼ ---
+
+// GET /api/admin/site-meta - 현재 사이트 메타 정보 조회
+router.get('/site-meta', authMiddleware, async (req, res) => {
+    try {
+        const { rows } = await db.query('SELECT * FROM site_meta WHERE id = 1');
+        if (rows.length === 0) {
+            // 기본값이 없으면 초기화
+            return res.json({ success: true, meta: { title: '', description: '', image_url: '' } });
+        }
+        res.json({ success: true, meta: rows[0] });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '메타 정보 조회 중 서버 에러' });
+    }
+});
+
+// PUT /api/admin/site-meta - 사이트 메타 정보 수정
+router.put(
+    '/site-meta',
+    authMiddleware,
+    checkPermission(['super_admin', 'content_manager']),
+    upload.single('metaImage'), // 'metaImage' 필드로 새 썸네일 이미지를 받습니다.
+    async (req, res) => {
+        const { title, description, existing_image_url } = req.body;
+        let finalImageUrl = existing_image_url;
+
+        try {
+            // 1. 새로운 썸네일 이미지가 업로드된 경우
+            if (req.file) {
+                // 1-1. 기존 이미지가 있었다면 S3에서 삭제
+                if (existing_image_url && existing_image_url.startsWith('http')) {
+                    await deleteImageFromS3(existing_image_url);
+                }
+                // 1-2. 새 이미지를 S3에 업로드하고 URL을 교체
+                finalImageUrl = await uploadImageToS3(req.file.buffer, req.file.originalname, 'meta', req.user.userId);
+            }
+
+            // 2. DB에 메타 정보를 업데이트 (없으면 새로 생성 - ON CONFLICT)
+            const query = `
+                INSERT INTO site_meta (id, title, description, image_url)
+                VALUES (1, $1, $2, $3)
+                ON CONFLICT (id) DO UPDATE
+                SET title = $1, description = $2, image_url = $3;
+            `;
+            await db.query(query, [title, description, finalImageUrl]);
+
+            res.status(200).json({ success: true, message: '사이트 공유 정보가 성공적으로 업데이트되었습니다.' });
+        } catch (error) {
+            console.error("사이트 메타 정보 업데이트 에러:", error);
+            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+        }
+    }
+);
+
 
 // --- ▼▼▼ 시뮬레이터 매개변수 관리 API (조회, 수정) 추가 ▼▼▼ ---
 // GET /api/admin/simulator-parameters - 모든 시뮬레이터 매개변수 조회
@@ -2295,5 +2375,10 @@ router.delete('/users/:id', authMiddleware, checkPermission(['super_admin']), as
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
 });
+
+
+
+
+
 
 module.exports = router;
