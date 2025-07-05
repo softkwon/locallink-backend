@@ -759,7 +759,7 @@ router.put(
 /**
  * 파일명: routes/admin.js
  * 수정 위치: DELETE /api/admin/programs/:id
- * 수정 일시: 2025-07-03 10:27
+ * 기능: 옛날 데이터가 있어도 서버가 다운되지 않도록 수정
  */
 router.delete(
     '/programs/:id',
@@ -771,34 +771,33 @@ router.delete(
         try {
             await client.query('BEGIN');
 
-            // ★★★ 1. DB에서 프로그램 정보를 읽어와 삭제할 S3 이미지 URL들을 찾습니다. ★★★
             const programRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
             if (programRes.rows.length > 0 && programRes.rows[0].content) {
                 const content = programRes.rows[0].content;
                 const imagesToDelete = [];
                 content.forEach(section => {
                     if (section.images && Array.isArray(section.images)) {
-                        // S3 URL만 추출하여 리스트에 추가
                         section.images.forEach(imageUrl => {
-                            if (typeof imageUrl === 'string' && imageUrl.startsWith('https')) {
+                            // ★★★ S3 주소(http로 시작)일 경우에만 삭제 목록에 추가 ★★★
+                            if (typeof imageUrl === 'string' && imageUrl.startsWith('http')) {
                                 imagesToDelete.push(imageUrl);
                             }
                         });
                     }
                 });
                 
-                // ★★★ 2. S3에서 해당 이미지들을 삭제합니다. ★★★
                 if (imagesToDelete.length > 0) {
                     await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
                 }
             }
             
-            // 3. 관련 규칙 및 프로그램 자체를 DB에서 삭제합니다. (기존 로직과 동일)
+            // 이하 DB 삭제 로직은 기존과 동일
             const programCodeRes = await client.query('SELECT program_code FROM esg_programs WHERE id = $1', [id]);
             if (programCodeRes.rows.length > 0) {
                 await client.query('DELETE FROM strategy_rules WHERE recommended_program_code = $1', [programCodeRes.rows[0].program_code]);
             }
-            const { rowCount } = await db.query('DELETE FROM esg_programs WHERE id = $1', [id]);
+            await client.query('DELETE FROM user_applications WHERE program_id = $1', [id]); // 신청 내역도 함께 삭제
+            const { rowCount } = await client.query('DELETE FROM esg_programs WHERE id = $1', [id]);
             if (rowCount === 0) return res.status(404).json({ success: false, message: '프로그램을 찾을 수 없습니다.' });
 
             await client.query('COMMIT');
