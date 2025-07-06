@@ -766,7 +766,13 @@ router.get('/programs', authMiddleware, checkPermission(['super_admin', 'content
  * 수정 위치: POST /api/admin/programs
  * 수정 일시: 2025-07-06 23:25
  */
-router.post('/programs', authMiddleware, checkPermission(['super_admin', 'content_manager']), upload.array('newImages'), async (req, res) => {
+router.post(
+    '/programs',
+    authMiddleware,
+    checkPermission(['super_admin', 'content_manager']),
+    upload.any(), // newImages 대신 any()를 사용
+    async (req, res) => {
+    
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
@@ -774,34 +780,29 @@ router.post('/programs', authMiddleware, checkPermission(['super_admin', 'conten
         const { content, ...otherBodyFields } = req.body;
         const parsedContent = JSON.parse(content);
         
-        // ★★★ 핵심 수정 부분 ★★★
-        // 1. 새로 업로드된 파일들의 실제 S3 경로를 Map에 저장합니다.
-        const s3UrlMap = new Map(); 
-        if (req.files && req.files.length > 0) {
-            const uploadPromises = req.files.map(async (file) => {
-                // uploadImageToS3는 'programs/고유ID.png' 형태의 실제 경로를 반환합니다.
-                const s3Path = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
-                s3UrlMap.set(file.originalname, s3Path); // 원본 파일명 -> 실제 S3 경로
-            });
-            await Promise.all(uploadPromises);
-        }
+        // ★★★ 핵심 수정: '뉴스' 방식과 동일하게 placeholder를 기준으로 파일을 찾아 업로드합니다. ★★★
+        const finalContent = await Promise.all(parsedContent.map(async (section) => {
+            if (!section.images || section.images.length === 0) return section;
+
+            const updatedImages = await Promise.all(section.images.map(async (placeholder) => {
+                const file = req.files.find(f => f.fieldname === placeholder);
+                if (file) {
+                    // s3-helper가 실제 S3 경로를 반환합니다.
+                    return await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
+                }
+                return null; // 새 파일이 아닌 경우 null 반환
+            }));
+            // 최종적으로 S3 경로만 남깁니다.
+            return { ...section, images: updatedImages.filter(Boolean) };
+        }));
         
-        // 2. content 데이터의 이미지 이름들을 실제 S3 경로로 교체합니다.
-        parsedContent.forEach(section => {
-            if (section.images && section.images.length > 0) {
-                // 원본 파일명 대신, Map에서 찾은 실제 S3 경로를 저장합니다.
-                section.images = section.images.map(imageName => s3UrlMap.get(imageName) || imageName);
-            }
-        });
-        
-        // 3. DB에 최종 데이터 저장
         const query = `
             INSERT INTO esg_programs (title, program_code, esg_category, program_overview, content, economic_effects, related_links, risk_text, risk_description, opportunity_effects, service_regions, status) 
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'published') RETURNING id;
         `;
         const values = [
             otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
-            JSON.stringify(parsedContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
+            JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
             otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects, otherBodyFields.service_regions.split(',')
         ];
         
@@ -823,16 +824,23 @@ router.post('/programs', authMiddleware, checkPermission(['super_admin', 'conten
  * 수정 위치: PUT /api/admin/programs/:id
  * 수정 일시: 2025-07-06 23:25
  */
-router.put('/programs/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), upload.array('newImages'), async (req, res) => {
+router.put(
+    '/programs/:id',
+    authMiddleware,
+    checkPermission(['super_admin', 'content_manager']),
+    upload.any(), // newImages 대신 any()를 사용
+    async (req, res) => {
+    
     const { id } = req.params;
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
 
+        // 1. 수정 전 옛날 이미지 경로 가져오기
         const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
         const oldImageUrls = new Set();
         if (oldProgramRes.rows[0]?.content) {
-            const oldContent = Array.isArray(oldProgramRes.rows[0].content) ? oldProgramRes.rows[0].content : JSON.parse(oldProgramRes.rows[0].content);
+            const oldContent = JSON.parse(oldProgramRes.rows[0].content);
             oldContent.forEach(section => {
                 if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
             });
@@ -841,30 +849,30 @@ router.put('/programs/:id', authMiddleware, checkPermission(['super_admin', 'con
         const { content, ...otherBodyFields } = req.body;
         const parsedContent = JSON.parse(content);
         
-        // ★★★ 핵심 수정 부분 (생성 API와 동일) ★★★
-        const s3UrlMap = new Map();
-        if (req.files && req.files.length > 0) {
-            const uploadPromises = req.files.map(async (file) => {
-                const s3Path = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
-                s3UrlMap.set(file.originalname, s3Path);
-            });
-            await Promise.all(uploadPromises);
-        }
-        
-        parsedContent.forEach(section => {
-            if (section.images && Array.isArray(section.images)) {
-                section.images = section.images.map(imageIdentifier => {
-                    // 새 이미지(파일명)는 실제 S3 경로로, 기존 이미지(URL)는 그대로 둡니다.
-                    return s3UrlMap.get(imageIdentifier) || imageIdentifier;
-                });
-            }
-        });
+        // ★★★ 핵심 수정: '뉴스' 방식과 동일하게 placeholder와 실제 URL을 처리합니다. ★★★
+        const finalContent = await Promise.all(parsedContent.map(async (section) => {
+            if (!section.images || section.images.length === 0) return section;
 
+            const updatedImages = await Promise.all(section.images.map(async (imageOrPlaceholder) => {
+                // 이미 전체 URL인 경우 (기존 이미지)
+                if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('https')) {
+                    return imageOrPlaceholder;
+                }
+                // 새로운 파일(placeholder)인 경우
+                const file = req.files.find(f => f.fieldname === imageOrPlaceholder);
+                if (file) {
+                    return await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
+                }
+                return null;
+            }));
+            return { ...section, images: updatedImages.filter(Boolean) };
+        }));
+
+        // 삭제할 이미지 찾아서 S3에서 제거
         const finalImageUrls = new Set();
-        parsedContent.forEach(section => {
+        finalContent.forEach(section => {
             if (section.images) section.images.forEach(imgUrl => finalImageUrls.add(imgUrl));
         });
-
         const imagesToDelete = [...oldImageUrls].filter(url => !finalImageUrls.has(url));
         if (imagesToDelete.length > 0) {
             await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
@@ -879,7 +887,7 @@ router.put('/programs/:id', authMiddleware, checkPermission(['super_admin', 'con
         `;
         const values = [
             otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
-            JSON.stringify(parsedContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
+            JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
             otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
             otherBodyFields.service_regions.split(','), id
         ];
