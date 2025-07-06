@@ -764,7 +764,7 @@ router.get('/programs', authMiddleware, checkPermission(['super_admin', 'content
 /**
  * 파일명: routes/admin.js
  * 수정 위치: POST /api/admin/programs
- * 수정 일시: 2025-07-06 10:48
+ * 수정 일시: 2025-07-06 23:25
  */
 router.post('/programs', authMiddleware, checkPermission(['super_admin', 'content_manager']), upload.array('newImages'), async (req, res) => {
     const client = await db.pool.connect();
@@ -821,7 +821,7 @@ router.post('/programs', authMiddleware, checkPermission(['super_admin', 'conten
 /**
  * 파일명: routes/admin.js
  * 수정 위치: PUT /api/admin/programs/:id
- * 수정 일시: 2025-07-06 11:45
+ * 수정 일시: 2025-07-06 23:25
  */
 router.put('/programs/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), upload.array('newImages'), async (req, res) => {
     const { id } = req.params;
