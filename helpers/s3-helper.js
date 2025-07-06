@@ -18,6 +18,12 @@ const path = require('path');
  * @param {number} userId - 요청을 보낸 사용자의 ID
  * @returns {Promise<string>} - S3에 업로드된 파일의 전체 URL
  */
+
+/**
+ * 파일명: helpers/s3-helper.js
+ * 수정 위치: uploadImageToS3 함수 내부
+ * 수정 일시: 2025-07-06 10:48
+ */
 async function uploadImageToS3(fileBuffer, originalFilename, folder, userId) {
     try {
         const processedImageBuffer = await sharp(fileBuffer)
@@ -25,22 +31,23 @@ async function uploadImageToS3(fileBuffer, originalFilename, folder, userId) {
             .toFormat('jpeg', { quality: 85 })
             .toBuffer();
         
+        // ★★★ 파일 이름 생성 로직을 더 간단하고 안전하게 변경 ★★★
         const extension = path.extname(originalFilename);
-        const filename = `${folder.slice(0, -1)}-${userId}-${Date.now()}${extension}`;
+        const filename = `${folder.slice(0, -1)}-${userId || 'user'}-${Date.now()}${extension}`;
         
         const uploadParams = {
             Bucket: process.env.AWS_S3_BUCKET_NAME,
             Key: `${folder}/${filename}`,
             Body: processedImageBuffer,
-            ContentType: 'image/jpeg'
+            ContentType: 'image/jpeg',
         };
 
         const result = await s3.upload(uploadParams).promise();
-        return result.Location; // 업로드된 최종 URL 반환
+        return result.Location;
 
     } catch (error) {
         console.error(`S3 Upload Error in folder ${folder}:`, error);
-        throw error; // 에러를 상위로 전파하여 API에서 처리하도록 함
+        throw error;
     }
 }
 

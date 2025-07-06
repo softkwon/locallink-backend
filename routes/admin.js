@@ -654,6 +654,11 @@ router.get(
 // routes/admin.js
 
 // POST /programs - 새 프로그램 생성 (파일과 텍스트를 한 번에 처리)
+/**
+ * 파일명: routes/admin.js
+ * 수정 위치: POST /api/admin/programs
+ * 수정 일시: 2025-07-06 10:48
+ */
 router.post(
     '/programs',
     authMiddleware,
@@ -669,35 +674,29 @@ router.post(
             title, program_code, esg_category, program_overview, risk_text, risk_description,
             content, economic_effects, related_links, opportunity_effects, service_regions, imageCounts
         } = req.body;
-
-        if (!title || !program_code || !esg_category) {
-            return res.status(400).json({ success: false, message: '필수 필드를 모두 입력해주세요.' });
-        }
         
         const parsedContent = JSON.parse(content);
         const parsedImageCounts = imageCounts ? JSON.parse(imageCounts) : [];
         
-        // ★★★ 1. 모든 새 이미지를 S3에 먼저 업로드하고 URL 목록을 받습니다. ★★★
+        // ★★★ S3에 모든 새 이미지를 먼저 업로드합니다. ★★★
         const uploadedUrls = [];
         if (req.files && req.files.length > 0) {
             for (const file of req.files) {
+                // req.user.userId 값을 헬퍼 함수에 전달합니다.
                 const imageUrl = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
                 uploadedUrls.push(imageUrl);
             }
         }
         
-        // ★★★ 2. 업로드된 S3 URL을 content 데이터에 올바르게 분배합니다. ★★★
+        // ★★★ 업로드된 S3 URL을 content 데이터에 올바르게 분배합니다. ★★★
         let urlPointer = 0;
         for (let i = 0; i < parsedContent.length; i++) {
-            const countForThisSection = parsedImageCounts[i] || 0;
-            if (countForThisSection > 0) {
-                const imagesForThisSection = uploadedUrls.slice(urlPointer, urlPointer + countForThisSection);
-                if (!parsedContent[i].images) {
-                    parsedContent[i].images = [];
-                }
-                // 이제 파일명이 아닌 전체 S3 URL이 저장됩니다.
-                parsedContent[i].images.push(...imagesForThisSection);
-                urlPointer += countForThisSection;
+            const countForSection = parsedImageCounts[i] || 0;
+            if (countForSection > 0) {
+                const imagesForSection = uploadedUrls.slice(urlPointer, urlPointer + countForSection);
+                if (!parsedContent[i].images) parsedContent[i].images = [];
+                parsedContent[i].images.push(...imagesForSection);
+                urlPointer += countForSection;
             }
         }
         
@@ -708,8 +707,8 @@ router.post(
         `;
         const values = [
             title, program_code, esg_category, program_overview,
-            JSON.stringify(parsedContent), economic_effects, related_links,
-            risk_text, risk_description, opportunity_effects, service_regions.split(',')
+            JSON.stringify(parsedContent), economic_effects ? JSON.parse(economic_effects) : [], related_links ? JSON.parse(related_links) : [],
+            risk_text, risk_description, opportunity_effects ? JSON.parse(opportunity_effects) : [], service_regions.split(',')
         ];
         
         await client.query(query, values);
@@ -719,9 +718,6 @@ router.post(
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('프로그램 생성 에러:', error);
-        if (error.code === '23505' && error.constraint === 'esg_programs_program_code_key') {
-            return res.status(409).json({ success: false, message: '이미 사용 중인 프로그램 코드입니다.' });
-        }
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     } finally {
         client.release();
