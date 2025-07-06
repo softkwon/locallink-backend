@@ -663,43 +663,45 @@ router.post(
     '/programs',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
-    upload.array('newImages'), 
+    upload.array('newImages'), // 프론트의 FormData에서 'newImages' 필드로 전송된 파일들을 받음
     async (req, res) => {
     
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
 
+        // 프론트에서 FormData로 보낸 텍스트 데이터들을 받습니다.
         const { 
             title, program_code, esg_category, program_overview, risk_text, risk_description,
-            content, economic_effects, related_links, opportunity_effects, service_regions, imageCounts
+            content, economic_effects, related_links, opportunity_effects, service_regions
         } = req.body;
         
+        // JSON 문자열로 온 데이터들을 파싱합니다.
         const parsedContent = JSON.parse(content);
-        const parsedImageCounts = imageCounts ? JSON.parse(imageCounts) : [];
         
-        // ★★★ S3에 모든 새 이미지를 먼저 업로드합니다. ★★★
+        // S3에 모든 새 이미지를 먼저 업로드하고 URL 목록을 받습니다.
         const uploadedUrls = [];
         if (req.files && req.files.length > 0) {
-            for (const file of req.files) {
-                // req.user.userId 값을 헬퍼 함수에 전달합니다.
-                const imageUrl = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
-                uploadedUrls.push(imageUrl);
-            }
+            // Promise.all을 사용해 여러 파일을 동시에 효율적으로 업로드합니다.
+            const uploadPromises = req.files.map(file => 
+                uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId)
+            );
+            const resolvedUrls = await Promise.all(uploadPromises);
+            uploadedUrls.push(...resolvedUrls);
         }
         
-        // ★★★ 업로드된 S3 URL을 content 데이터에 올바르게 분배합니다. ★★★
+        // 업로드된 S3 URL을 content 데이터에 올바르게 다시 채워 넣습니다.
         let urlPointer = 0;
-        for (let i = 0; i < parsedContent.length; i++) {
-            const countForSection = parsedImageCounts[i] || 0;
-            if (countForSection > 0) {
-                const imagesForSection = uploadedUrls.slice(urlPointer, urlPointer + countForSection);
-                if (!parsedContent[i].images) parsedContent[i].images = [];
-                parsedContent[i].images.push(...imagesForSection);
-                urlPointer += countForSection;
+        parsedContent.forEach(section => {
+            // 프론트에서 'placeholder'로 채워뒀던 이미지 배열을 실제 S3 URL로 교체합니다.
+            const imageCountForSection = section.images.length;
+            if (imageCountForSection > 0) {
+                section.images = uploadedUrls.slice(urlPointer, urlPointer + imageCountForSection);
+                urlPointer += imageCountForSection;
             }
-        }
+        });
         
+        // 최종적으로 완성된 데이터를 DB에 저장합니다.
         const query = `
             INSERT INTO esg_programs 
                 (title, program_code, esg_category, program_overview, content, economic_effects, related_links, risk_text, risk_description, opportunity_effects, service_regions) 
@@ -707,8 +709,9 @@ router.post(
         `;
         const values = [
             title, program_code, esg_category, program_overview,
-            JSON.stringify(parsedContent), economic_effects ? JSON.parse(economic_effects) : [], related_links ? JSON.parse(related_links) : [],
-            risk_text, risk_description, opportunity_effects ? JSON.parse(opportunity_effects) : [], service_regions.split(',')
+            JSON.stringify(parsedContent), // S3 URL이 포함된 최종 content
+            economic_effects, related_links,
+            risk_text, risk_description, opportunity_effects, service_regions.split(',')
         ];
         
         await client.query(query, values);
