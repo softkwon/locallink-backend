@@ -1,8 +1,7 @@
-// routes/programs.js (새 파일)
+
 const express = require('express');
 const db = require('../db');
 const router = express.Router();
-
 
 /**
  * 프로그램 content 데이터 안의 모든 상대 이미지 경로를 전체 URL로 변환하는 함수
@@ -10,6 +9,7 @@ const router = express.Router();
  * @returns {object} - 이미지 경로가 변환된 프로그램 객체
  */
 const convertProgramContentUrls = (program) => {
+    // 프로그램 데이터나 content가 없으면 원본 그대로 반환
     if (!program || !program.content) {
         return program;
     }
@@ -21,15 +21,18 @@ const convertProgramContentUrls = (program) => {
         content.forEach(section => {
             if (section.images && Array.isArray(section.images)) {
                 section.images = section.images.map(path => {
+                    // 경로가 있고, http로 시작하지 않는 상대 경로일 경우
                     if (path && !path.startsWith('http')) {
-                        // 이제 process.env에 설정된 올바른 S3 주소를 사용하게 됩니다.
+                        // ★★★ 수정된 부분: 서버 환경 변수에 설정된 올바른 S3 주소를 사용합니다. ★★★
                         return `${process.env.STATIC_BASE_URL}/${path}`;
                     }
+                    // 이미 전체 URL이거나 경로가 없으면 그대로 둡니다.
                     return path;
                 });
             }
         });
     }
+    
     newProgram.content = content;
     return newProgram;
 };
@@ -41,7 +44,6 @@ router.get('/', async (req, res) => {
         const query = "SELECT * FROM esg_programs WHERE status = 'published' ORDER BY id ASC";
         const { rows } = await db.query(query);
 
-        // ★★★ 수정된 부분 ★★★
         const processedPrograms = rows.map(convertProgramContentUrls);
 
         res.status(200).json({ success: true, programs: processedPrograms });
@@ -61,7 +63,6 @@ router.get('/:id', async (req, res) => {
             return res.status(404).json({ success: false, message: "프로그램을 찾을 수 없습니다." });
         }
         
-        // ★★★ 수정된 부분 ★★★
         const processedProgram = convertProgramContentUrls(rows[0]);
 
         res.status(200).json({ success: true, program: processedProgram });
@@ -73,7 +74,7 @@ router.get('/:id', async (req, res) => {
 
 // POST /api/programs/batch-details - 여러 프로그램 상세 정보 조회
 router.post('/batch-details', async (req, res) => {
-    const { programIds } = req.body; // [1, 5, 10] 과 같은 배열
+    const { programIds } = req.body;
     if (!programIds || !Array.isArray(programIds) || programIds.length === 0) {
         return res.status(200).json({ success: true, programs: [] });
     }
@@ -81,7 +82,6 @@ router.post('/batch-details', async (req, res) => {
         const query = 'SELECT * FROM esg_programs WHERE id = ANY($1::int[])';
         const { rows } = await db.query(query, [programIds]);
 
-        // ★★★ 수정된 부분 ★★★
         const processedPrograms = rows.map(convertProgramContentUrls);
 
         res.status(200).json({ success: true, programs: processedPrograms });
