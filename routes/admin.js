@@ -37,18 +37,57 @@ const partnerStorage = multer.diskStorage({
 const uploadPartner = multer({ storage: partnerStorage, limits: { fileSize: 5 * 1024 * 1024 } });
 
 
-// GET /api/admin/users - 모든 사용자 목록 가져오기
+/**
+ * 파일명: routes/admin.js
+ * 수정 위치: GET /api/admin/users
+ * 수정 일시: 2025-07-06 09:00
+ */
+// GET /api/admin/users - 모든 사용자 목록 조회 (레벨 계산 로직 추가)
 router.get(
     '/users',
-    authMiddleware, // 1. 로그인 확인
-    checkPermission(['super_admin', 'user_manager']), // 2. 'super_admin' 또는 'user_manager' 역할 확인
+    authMiddleware,
+    checkPermission(['super_admin', 'user_manager']),
     async (req, res) => {
         try {
-            const query = 'SELECT id, email, company_name, representative, manager_name, manager_phone, role, created_at FROM users ORDER BY created_at DESC';
+            // ★★★ 1. 사용자의 레벨 계산에 필요한 모든 데이터를 가져오는 쿼리로 수정 ★★★
+            const query = `
+                SELECT 
+                    u.id, u.email, u.company_name, u.manager_name, u.manager_phone, u.role, u.created_at,
+                    EXISTS (SELECT 1 FROM diagnoses WHERE user_id = u.id AND status = 'completed') as has_completed_diagnosis,
+                    (
+                        SELECT status FROM user_applications ua
+                        WHERE ua.user_id = u.id
+                        ORDER BY 
+                            CASE status
+                                WHEN '완료' THEN 1 
+                                WHEN '진행' THEN 2 
+                                WHEN '접수' THEN 3
+                                ELSE 4
+                            END
+                        LIMIT 1
+                    ) as highest_application_status
+                FROM users u
+                ORDER BY u.id DESC
+            `;
             const { rows } = await db.query(query);
-            res.status(200).json({ success: true, users: rows });
+
+            // ★★★ 2. 각 사용자의 레벨을 계산하여 데이터에 추가합니다. ★★★
+            const usersWithLevel = rows.map(user => {
+                let level = 1;
+                if (user.has_completed_diagnosis) level = 2;
+                if (user.highest_application_status) {
+                    level = 3;
+                    if (user.highest_application_status === '진행') level = 4;
+                    if (user.highest_application_status === '완료') level = 5;
+                }
+                // 기존 user 객체에 level 정보를 추가하여 반환
+                return { ...user, level: level };
+            });
+
+            res.status(200).json({ success: true, users: usersWithLevel });
+
         } catch (error) {
-            console.error('관리자용 사용자 목록 조회 에러:', error);
+            console.error("관리자용 사용자 목록 조회 에러:", error);
             res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
         }
     }
