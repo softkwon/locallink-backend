@@ -271,31 +271,29 @@ router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'user_m
 // PUT /api/admin/inquiries/:id/status - 문의 상태 변경 (+답변 시 알림 추가)
 router.put('/inquiries/:id/status', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
     const { id } = req.params;
-    const { status, reply } = req.body; 
+    const { status } = req.body; // ★★★ reply 필드를 받지 않도록 수정 ★★★
 
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
 
-        // ★★★ 수정된 부분 1: RETURNING 절에서 title 대신 inquiry_type을 가져옵니다. ★★★
-        const updateQuery = 'UPDATE inquiries SET status = $1, reply = $2, replied_at = CASE WHEN $1 = \'resolved\' THEN NOW() ELSE replied_at END WHERE id = $3 RETURNING user_id, inquiry_type';
-        const result = await client.query(updateQuery, [status, reply, id]);
+        // ★★★ 존재하지 않는 reply, replied_at 컬럼을 제거한 최종 쿼리 ★★★
+        const updateQuery = 'UPDATE inquiries SET status = $1 WHERE id = $2 RETURNING user_id, inquiry_type';
+        const result = await client.query(updateQuery, [status, id]);
 
         if (result.rows.length === 0) {
             throw new Error('문의를 찾을 수 없습니다.');
         }
+
+        // 'resolved' 또는 'in_progress' 등 상태가 변경될 때마다 알림 생성
+        const inquiry = result.rows[0];
+        const message = `문의하신 '[${inquiry.inquiry_type}]'의 처리 상태가 [${status}](으)로 변경되었습니다.`;
+        const link_url = '/mypage_inquiry.html';
         
-        if (status === 'resolved') {
-            const inquiry = result.rows[0];
-            // ★★★ 수정된 부분 2: title 대신 inquiry_type으로 알림 메시지를 생성합니다. ★★★
-            const message = `문의하신 '[${inquiry.inquiry_type}]'에 대한 답변이 등록되었습니다.`;
-            const link_url = '/mypage_inquiry.html';
-            
-            await client.query(
-                'INSERT INTO notifications (user_id, message, link_url) VALUES ($1, $2, $3)',
-                [inquiry.user_id, message, link_url]
-            );
-        }
+        await client.query(
+            'INSERT INTO notifications (user_id, message, link_url) VALUES ($1, $2, $3)',
+            [inquiry.user_id, message, link_url]
+        );
 
         await client.query('COMMIT');
         res.status(200).json({ success: true, message: '상태가 성공적으로 변경되었습니다.' });
