@@ -4,36 +4,44 @@ const db = require('../db');
 const router = express.Router();
 
 /**
- * 프로그램 content 데이터 안의 모든 상대 이미지 경로를 전체 URL로 변환하는 함수
+ * 프로그램 데이터의 모든 JSON 필드를 파싱하고, 이미지 경로를 전체 URL로 변환하는 통합 함수
  * @param {object} program - DB에서 가져온 프로그램 데이터 한 줄
- * @returns {object} - 이미지 경로가 변환된 프로그램 객체
+ * @returns {object} - 모든 경로와 JSON이 처리된 프로그램 객체
  */
-const convertProgramContentUrls = (program) => {
-    // 프로그램 데이터나 content가 없으면 원본 그대로 반환
-    if (!program || !program.content) {
-        return program;
-    }
+const processProgramData = (program) => {
+    if (!program) return program;
 
     const newProgram = { ...program };
-    const content = (typeof newProgram.content === 'string') ? JSON.parse(newProgram.content) : newProgram.content;
+    const jsonFields = ['content', 'economic_effects', 'related_links', 'opportunity_effects'];
 
-    if (Array.isArray(content)) {
-        content.forEach(section => {
+    // 1. 문자열 상태인 JSON 필드를 모두 실제 객체/배열로 변환
+    jsonFields.forEach(field => {
+        if (newProgram[field] && typeof newProgram[field] === 'string') {
+            try {
+                newProgram[field] = JSON.parse(newProgram[field]);
+            } catch (e) {
+                console.error(`Error parsing JSON for field ${field} in program ${newProgram.id}:`, e);
+                // 필드의 종류에 따라 기본값을 다르게 설정할 수 있습니다.
+                // 대부분 배열 형태이므로 빈 배열로 초기화합니다.
+                newProgram[field] = [];
+            }
+        }
+    });
+
+    // 2. content 안의 이미지 경로를 전체 URL로 변환
+    if (newProgram.content && Array.isArray(newProgram.content)) {
+        newProgram.content.forEach(section => {
             if (section.images && Array.isArray(section.images)) {
                 section.images = section.images.map(path => {
-                    // 경로가 있고, http로 시작하지 않는 상대 경로일 경우
                     if (path && !path.startsWith('http')) {
-                        // ★★★ 수정된 부분: 서버 환경 변수에 설정된 올바른 S3 주소를 사용합니다. ★★★
                         return `${process.env.STATIC_BASE_URL}/${path}`;
                     }
-                    // 이미 전체 URL이거나 경로가 없으면 그대로 둡니다.
                     return path;
                 });
             }
         });
     }
-    
-    newProgram.content = content;
+
     return newProgram;
 };
 
@@ -44,9 +52,10 @@ router.get('/', async (req, res) => {
         const query = "SELECT * FROM esg_programs WHERE status = 'published' ORDER BY id ASC";
         const { rows } = await db.query(query);
 
-        const processedPrograms = rows.map(convertProgramContentUrls);
-
+        // ★★★ 수정된 부분 ★★★
+        const processedPrograms = rows.map(processProgramData);
         res.status(200).json({ success: true, programs: processedPrograms });
+
     } catch (error) {
         console.error("공개용 프로그램 목록 조회 에러:", error);
         res.status(500).json({ success: false, message: "서버 에러" });
@@ -63,9 +72,10 @@ router.get('/:id', async (req, res) => {
             return res.status(404).json({ success: false, message: "프로그램을 찾을 수 없습니다." });
         }
         
-        const processedProgram = convertProgramContentUrls(rows[0]);
-
+        // ★★★ 수정된 부분 ★★★
+        const processedProgram = processProgramData(rows[0]);
         res.status(200).json({ success: true, program: processedProgram });
+
     } catch (error) {
         console.error("공개용 프로그램 상세 조회 에러:", error);
         res.status(500).json({ success: false, message: "서버 에러" });
@@ -82,9 +92,10 @@ router.post('/batch-details', async (req, res) => {
         const query = 'SELECT * FROM esg_programs WHERE id = ANY($1::int[])';
         const { rows } = await db.query(query, [programIds]);
 
-        const processedPrograms = rows.map(convertProgramContentUrls);
-
+        // ★★★ 수정된 부분 ★★★
+        const processedPrograms = rows.map(processProgramData);
         res.status(200).json({ success: true, programs: processedPrograms });
+        
     } catch (error) {
         console.error("배치 상세 조회 에러:", error);
         res.status(500).json({ success: false, message: '서버 에러' });

@@ -83,7 +83,45 @@ const convertSiteContentImageUrls = (contentValue) => {
 const fs = require('fs'); // ★★★ 파일 시스템 모듈 불러오기 ★★★
 const path = require('path');   // ★★★ path 불러오기 ★★★
 
+/**
+ * 프로그램 데이터의 모든 JSON 필드를 파싱하고, 이미지 경로를 전체 URL로 변환하는 통합 함수
+ * @param {object} program - DB에서 가져온 프로그램 데이터 한 줄
+ * @returns {object} - 모든 경로와 JSON이 처리된 프로그램 객체
+ */
+const processProgramData = (program) => {
+    if (!program) return program;
 
+    const newProgram = { ...program };
+    const jsonFields = ['content', 'economic_effects', 'related_links', 'opportunity_effects'];
+
+    // 1. 문자열 상태인 JSON 필드를 모두 실제 객체/배열로 변환
+    jsonFields.forEach(field => {
+        if (newProgram[field] && typeof newProgram[field] === 'string') {
+            try {
+                newProgram[field] = JSON.parse(newProgram[field]);
+            } catch (e) {
+                console.error(`Error parsing JSON for field ${field}:`, e);
+                newProgram[field] = []; // 파싱 오류 시 빈 배열로 초기화
+            }
+        }
+    });
+
+    // 2. content 안의 이미지 경로를 전체 URL로 변환
+    if (newProgram.content && Array.isArray(newProgram.content)) {
+        newProgram.content.forEach(section => {
+            if (section.images && Array.isArray(section.images)) {
+                section.images = section.images.map(path => {
+                    if (path && !path.startsWith('http')) {
+                        return `${process.env.STATIC_BASE_URL}/${path}`;
+                    }
+                    return path;
+                });
+            }
+        });
+    }
+
+    return newProgram;
+};
 
 // --- ▼▼▼ 파일 업로드 설정을 '메모리 저장소' 하나로 통일합니다. ▼▼▼ ---
 const storage = multer.memoryStorage(); // 파일을 디스크가 아닌 메모리에 버퍼 형태로 저장
@@ -704,25 +742,20 @@ router.put(
 
 // --- ▼▼▼ ESG 추천 프로그램 관리 API (CRUD) 추가 ▼▼▼ ---
 // GET /api/admin/programs - 모든 프로그램 목록 조회
-router.get(
-    '/programs',
-    authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
-    async (req, res) => {
-        try {
-            const { rows } = await db.query('SELECT * FROM esg_programs ORDER BY id ASC');
-
-            // ★★★ 수정된 부분 ★★★
-            // 조회된 모든 프로그램의 이미지 경로를 전체 URL로 변환합니다.
-            const processedPrograms = rows.map(convertProgramContentUrls);
-            
-            res.status(200).json({ success: true, programs: processedPrograms });
-        } catch (error) {
-            console.error('관리자용 프로그램 목록 조회 에러:', error);
-            res.status(500).json({ success: false, message: '서버 에러' });
-        }
+router.get('/programs', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+    try {
+        const { rows } = await db.query('SELECT * FROM esg_programs ORDER BY id ASC');
+        
+        // ★★★ 수정된 부분 ★★★
+        // 조회된 모든 프로그램의 데이터를 새로운 헬퍼 함수로 처리합니다.
+        const processedPrograms = rows.map(processProgramData);
+        
+        res.status(200).json({ success: true, programs: processedPrograms });
+    } catch (error) {
+        console.error('관리자용 프로그램 목록 조회 에러:', error);
+        res.status(500).json({ success: false, message: '서버 에러' });
     }
-);
+});
 
 // POST /api/admin/programs - 새 프로그램 추가
 // routes/admin.js
@@ -966,29 +999,24 @@ router.delete(
  */
 
 // GET /api/admin/programs/:id - 특정 프로그램 정보 조회
-router.get(
-    '/programs/:id',
-    authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
-    async (req, res) => {
-        const { id } = req.params;
-        try {
-            const { rows } = await db.query('SELECT * FROM esg_programs WHERE id = $1', [id]);
-            if (rows.length === 0) {
-                return res.status(404).json({ success: false, message: '해당 프로그램을 찾을 수 없습니다.' });
-            }
-
-            // ★★★ 수정된 부분 ★★★
-            // 조회된 프로그램의 이미지 경로를 전체 URL로 변환합니다.
-            const processedProgram = convertProgramContentUrls(rows[0]);
-
-            res.status(200).json({ success: true, program: processedProgram });
-        } catch (error) {
-            console.error('프로그램 상세 조회 에러:', error);
-            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+router.get('/programs/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+    const { id } = req.params;
+    try {
+        const { rows } = await db.query('SELECT * FROM esg_programs WHERE id = $1', [id]);
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: '해당 프로그램을 찾을 수 없습니다.' });
         }
+
+        // ★★★ 수정된 부분 ★★★
+        // 조회된 프로그램 데이터를 새로운 헬퍼 함수로 처리합니다.
+        const processedProgram = processProgramData(rows[0]);
+
+        res.status(200).json({ success: true, program: processedProgram });
+    } catch (error) {
+        console.error('프로그램 상세 조회 에러:', error);
+        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
-);
+});
 
 /**
  * 프로그램 상태 변경(발행/초안) API
