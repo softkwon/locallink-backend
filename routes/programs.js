@@ -3,8 +3,6 @@ const express = require('express');
 const db = require('../db');
 const router = express.Router();
 
-// S3 기본 URL. 실제 환경에서는 process.env.STATIC_BASE_URL 등을 사용해야 합니다.
-const STATIC_BASE_URL = 'https://locallink-backend.onrender.com';
 
 /**
  * 프로그램 content 데이터 안의 모든 상대 이미지 경로를 전체 URL로 변환하는 함수
@@ -24,7 +22,8 @@ const convertProgramContentUrls = (program) => {
             if (section.images && Array.isArray(section.images)) {
                 section.images = section.images.map(path => {
                     if (path && !path.startsWith('http')) {
-                        return `${STATIC_BASE_URL}/${path}`;
+                        // 이제 process.env에 설정된 올바른 S3 주소를 사용하게 됩니다.
+                        return `${process.env.STATIC_BASE_URL}/${path}`;
                     }
                     return path;
                 });
