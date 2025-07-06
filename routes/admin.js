@@ -840,12 +840,11 @@ router.put(
         const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
         const oldImageUrls = new Set();
         if (oldProgramRes.rows[0]?.content) {
-            const oldContent = JSON.parse(oldProgramRes.rows[0].content);
-            if(Array.isArray(oldContent)) {
-                oldContent.forEach(section => {
-                    if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
-                });
-            }
+            // DB의 content는 이미 객체일 수 있으므로 안전하게 처리
+            const oldContent = Array.isArray(oldProgramRes.rows[0].content) ? oldProgramRes.rows[0].content : JSON.parse(oldProgramRes.rows[0].content);
+            oldContent.forEach(section => {
+                if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
+            });
         }
 
         const { content, ...otherBodyFields } = req.body;
@@ -856,14 +855,14 @@ router.put(
             if (!section.images || section.images.length === 0) return section;
 
             const updatedImages = await Promise.all(section.images.map(async (imageOrPlaceholder) => {
-                if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('https')) {
-                    return imageOrPlaceholder;
+                if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('http')) {
+                    return imageOrPlaceholder; // 기존 이미지 URL
                 }
                 const file = req.files.find(f => f.fieldname === imageOrPlaceholder);
                 if (file) {
                     return await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
                 }
-                return imageOrPlaceholder; // 기존 URL이나 처리 못한 placeholder 유지
+                return imageOrPlaceholder; // 처리 못한 경우, 원래 값 유지
             }));
             return { ...section, images: updatedImages.filter(Boolean) };
         }));
@@ -886,7 +885,7 @@ router.put(
                 opportunity_effects = $10, service_regions = $11, updated_at = NOW()
             WHERE id = $12;
         `;
-
+        
         // ★★★ 수정된 부분: 불필요한 JSON.parse()를 모두 제거합니다. ★★★
         const values = [
             otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
