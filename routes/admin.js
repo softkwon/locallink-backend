@@ -797,7 +797,7 @@ router.put(
     '/programs/:id',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
-    upload.array('newImages'), // 'newImages' 키로 전송된 모든 새 파일을 받습니다.
+    upload.array('newImages'),
     async (req, res) => {
     
     const { id } = req.params;
@@ -805,13 +805,17 @@ router.put(
     try {
         await client.query('BEGIN');
 
-        // --- 1. DB에서 수정 전의 기존 이미지 URL 목록을 미리 가져옵니다. ---
+        // --- 1. DB에서 수정 전 데이터 로드 및 파싱 (버그 수정) ---
         const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
         const oldImageUrls = new Set();
         if (oldProgramRes.rows[0]?.content) {
-            oldProgramRes.rows[0].content.forEach(section => {
-                if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
-            });
+            // ★★★ 수정된 부분: DB에서 가져온 content 문자열을 JSON 객체로 파싱합니다. ★★★
+            const oldContent = JSON.parse(oldProgramRes.rows[0].content);
+            if (Array.isArray(oldContent)) {
+                oldContent.forEach(section => {
+                    if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
+                });
+            }
         }
 
         const { 
@@ -821,7 +825,7 @@ router.put(
         
         const parsedContent = JSON.parse(content);
         
-        // --- 2. 새로 추가된 이미지가 있다면 S3에 업로드하고, '파일이름 -> S3 URL' 맵을 만듭니다. ---
+        // --- 2. 새로 추가된 이미지 S3 업로드 ---
         const uploadedUrlMap = new Map();
         if (req.files && req.files.length > 0) {
             const uploadPromises = req.files.map(async (file) => {
@@ -831,18 +835,16 @@ router.put(
             await Promise.all(uploadPromises);
         }
         
-        // --- 3. 최종적으로 저장될 content의 이미지 목록을 완성합니다. ---
-        // (기존 S3 URL은 그대로 두고, 새 파일의 이름(placeholder)만 실제 S3 URL로 교체)
+        // --- 3. 최종 content 데이터 생성 ---
         parsedContent.forEach(section => {
             if (section.images && Array.isArray(section.images)) {
                 section.images = section.images.map(imageIdentifier => {
-                    // imageIdentifier가 파일 이름이면(새 이미지), Map에서 S3 URL을 찾고, 아니면(기존 URL) 그대로 둡니다.
                     return uploadedUrlMap.get(imageIdentifier) || imageIdentifier;
                 });
             }
         });
 
-        // --- 4. 수정 후 남은 이미지들과 수정 전 이미지들을 비교하여, 삭제된 이미지를 찾습니다. ---
+        // --- 4. 삭제할 이미지 식별 및 S3에서 제거 ---
         const finalImageUrls = new Set();
         parsedContent.forEach(section => {
             if (section.images) section.images.forEach(imgUrl => finalImageUrls.add(imgUrl));
@@ -850,12 +852,11 @@ router.put(
 
         const imagesToDelete = [...oldImageUrls].filter(url => !finalImageUrls.has(url));
         
-        // --- 5. S3에서 삭제된 이미지들을 실제로 제거합니다. ---
         if (imagesToDelete.length > 0) {
             await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
         }
 
-        // --- 6. DB에 모든 최종 정보를 업데이트합니다. ---
+        // --- 5. DB에 최종 정보 업데이트 ---
         const query = `
             UPDATE esg_programs SET 
                 title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, 
