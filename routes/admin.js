@@ -271,36 +271,38 @@ router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'user_m
 // PUT /api/admin/inquiries/:id/status - 문의 상태 변경 (+답변 시 알림 추가)
 router.put('/inquiries/:id/status', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body;
-    const client = await db.pool.connect(); // 트랜잭션을 위해 client 사용
+    const { status, reply } = req.body; 
+    
+    // ★★★ 트랜잭션 처리를 위해 client를 사용합니다. ★★★
+    const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
 
-        // 1. 문의 상태 업데이트
-        const { rowCount } = await client.query('UPDATE inquiries SET status = $1 WHERE id = $2', [status, id]);
-        if (rowCount === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ success: false, message: '문의를 찾을 수 없습니다.' });
+        const updateQuery = 'UPDATE inquiries SET status = $1, reply = $2, replied_at = CASE WHEN $1 = \'resolved\' THEN NOW() ELSE replied_at END WHERE id = $3 RETURNING user_id, title';
+        const result = await client.query(updateQuery, [status, reply, id]);
+
+        if (result.rows.length === 0) {
+            throw new Error('문의를 찾을 수 없습니다.');
+        }
+        
+        if (status === 'resolved') {
+            const inquiry = result.rows[0];
+            const message = `문의하신 "${inquiry.title}"에 답변이 등록되었습니다.`;
+            const link_url = '/mypage_inquiry.html';
+            
+            await client.query(
+                'INSERT INTO notifications (user_id, message, link_url) VALUES ($1, $2, $3)',
+                [inquiry.user_id, message, link_url]
+            );
         }
 
-        // ★★★ 2. 알림 생성 로직 추가 ★★★
-        const inquiryRes = await client.query('SELECT user_id, title FROM inquiries WHERE id = $1', [id]);
-        const { user_id, title } = inquiryRes.rows[0];
-        
-        const message = `문의하신 '${title}'의 처리 상태가 [${status}](으)로 변경되었습니다.`;
-        const link_url = `/mypage_inquiry.html`; // 문의내역 페이지로 이동
-        
-        await client.query(
-            'INSERT INTO notifications (user_id, message, link_url) VALUES ($1, $2, $3)',
-            [user_id, message, link_url]
-        );
-
         await client.query('COMMIT');
-        res.status(200).json({ success: true, message: '상태가 변경되었습니다.' });
+        res.status(200).json({ success: true, message: '상태가 성공적으로 변경되었습니다.' });
 
-    } catch (error) { 
+    } catch (error) {
         await client.query('ROLLBACK');
-        res.status(500).json({ success: false, message: '서버 에러' }); 
+        console.error(`문의(ID: ${id}) 상태 변경 에러:`, error);
+        res.status(500).json({ success: false, message: error.message || '서버 에러가 발생했습니다.' });
     } finally {
         client.release();
     }
