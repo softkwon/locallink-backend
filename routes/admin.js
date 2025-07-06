@@ -53,6 +53,32 @@ const convertProgramContentUrls = (program) => {
     return newProgram;
 };
 
+/**
+ * site_content 데이터 안의 이미지 객체 경로를 전체 URL로 변환하는 함수
+ * @param {object | string} contentValue - DB에서 가져온 content_value 데이터
+ * @returns {object} - 이미지 경로가 변환된 content 객체
+ */
+const convertSiteContentImageUrls = (contentValue) => {
+    if (!contentValue) {
+        return contentValue;
+    }
+    const sections = (typeof contentValue === 'string') ? JSON.parse(contentValue) : contentValue;
+
+    if (Array.isArray(sections)) {
+        sections.forEach(section => {
+            if (section.images && Array.isArray(section.images)) {
+                section.images.forEach(imageObj => {
+                    // imageObj가 존재하고, file 속성이 있으며, http로 시작하지 않을 때
+                    if (imageObj && imageObj.file && !imageObj.file.startsWith('http')) {
+                        imageObj.file = `${process.env.STATIC_BASE_URL}/${imageObj.file}`;
+                    }
+                });
+            }
+        });
+    }
+    return sections;
+};
+
 //지워도 된다는 함수들 체크필요//
 const fs = require('fs'); // ★★★ 파일 시스템 모듈 불러오기 ★★★
 const path = require('path');   // ★★★ path 불러오기 ★★★
@@ -1789,14 +1815,18 @@ router.get(
         try {
             const { rows } = await db.query('SELECT content_value FROM site_content WHERE content_key = $1', [key]);
             if (rows.length === 0) {
-                // 키가 존재하지 않을 경우, 프론트에서 처리하도록 빈 배열 또는 객체를 보냅니다.
                 const defaultValue = key === 'main_page_sections' ? [] : {};
                 return res.status(200).json({ success: true, content: defaultValue });
             }
-            res.status(200).json({ success: true, content: rows[0].content_value });
+
+            // ★★★ 수정된 부분 ★★★
+            // 조회된 콘텐츠의 이미지 경로를 전체 URL로 변환합니다.
+            const processedContent = convertSiteContentImageUrls(rows[0].content_value);
+
+            res.status(200).json({ success: true, content: processedContent });
         } catch (error) {
             console.error(`콘텐츠 조회 에러 (key: ${key}):`, error);
-            res.status(500).json({ success: false, message: '서버 에러' });
+            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
         }
     }
 );
@@ -1871,8 +1901,24 @@ router.get(
     async (req, res) => {
         try {
             const { rows } = await db.query('SELECT * FROM partners ORDER BY id ASC');
-            res.status(200).json({ success: true, partners: rows });
-        } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
+
+            // ★★★ 수정된 부분 ★★★
+            // 조회된 모든 협력사 목록을 순회하며 logo_url을 전체 S3 주소로 변환합니다.
+            const processedPartners = rows.map(partner => {
+                // 로고 URL이 존재하고, http로 시작하지 않는 상대 경로일 경우
+                if (partner.logo_url && !partner.logo_url.startsWith('http')) {
+                    // 환경 변수에 저장된 S3 주소를 앞에 붙여줍니다.
+                    return { ...partner, logo_url: `${process.env.STATIC_BASE_URL}/${partner.logo_url}` };
+                }
+                // 이미 전체 주소이거나 URL이 없는 경우는 그대로 반환합니다.
+                return partner;
+            });
+
+            res.status(200).json({ success: true, partners: processedPartners });
+        } catch (error) { 
+            console.error("협력사 목록 조회 에러:", error);
+            res.status(500).json({ success: false, message: '서버 에러' }); 
+        }
     }
 );
 
@@ -1969,8 +2015,8 @@ router.delete(
         }
     }
 );
-// --- ▼▼▼ 사이트 메타 정보(공유 미리보기) 관리 API ▼▼▼ ---
 
+// --- ▼▼▼ 사이트 메타 정보(공유 미리보기) 관리 API ▼▼▼ ---
 // GET /api/admin/site-meta - 현재 사이트 메타 정보 조회
 router.get('/site-meta', authMiddleware, async (req, res) => {
     try {
@@ -2158,12 +2204,21 @@ router.get('/news', authMiddleware, checkPermission(['super_admin', 'content_man
 router.get('/news/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     try {
-        // ★★★ SELECT 절에 is_pinned 컬럼을 추가합니다. ★★★
         const query = 'SELECT * FROM news_posts WHERE id = $1';
         const { rows } = await db.query(query, [id]);
-        if (rows.length === 0) return res.status(404).json({ success: false, message: '게시물을 찾을 수 없습니다.' });
-        res.status(200).json({ success: true, post: rows[0] });
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: '게시물을 찾을 수 없습니다.' });
+        }
+
+        // ★★★ 수정된 부분 ★★★
+        // 이전에 추가했던 헬퍼 함수를 사용하여 'news' 데이터의 이미지 경로도
+        // 전체 S3 URL로 변환해줍니다.
+        // 함수 이름은 convertProgramContentUrls 이지만, 뉴스 데이터에도 동일하게 작동합니다.
+        const processedPost = convertProgramContentUrls(rows[0]);
+
+        res.status(200).json({ success: true, post: processedPost });
     } catch (error) {
+        console.error("특정 소식 조회 에러:", error);
         res.status(500).json({ success: false, message: '서버 에러' });
     }
 });
@@ -2381,12 +2436,24 @@ router.get('/site-content', authMiddleware, checkPermission(['super_admin']), as
             db.query("SELECT * FROM site_content WHERE id = 1"),
             db.query("SELECT * FROM related_sites ORDER BY display_order")
         ]);
+
+        const siteContent = contentRes.rows[0] || {};
+
+        // ★★★ 수정된 부분 ★★★
+        // site_content의 메인 페이지 콘텐츠 이미지 경로를 전체 URL로 변환합니다.
+        if (siteContent.content_value) {
+            siteContent.content_value = convertSiteContentImageUrls(siteContent.content_value);
+        }
+
         res.status(200).json({ 
             success: true, 
-            content: contentRes.rows[0] || {},
+            content: siteContent,
             relatedSites: sitesRes.rows 
         });
-    } catch (e) { res.status(500).json({ success: false, message: '서버 에러' }); }
+    } catch (e) { 
+        console.error("사이트 콘텐츠 조회 에러:", e);
+        res.status(500).json({ success: false, message: '서버 에러' }); 
+    }
 });
 
 
@@ -2480,10 +2547,5 @@ router.delete('/users/:id', authMiddleware, checkPermission(['super_admin']), as
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
 });
-
-
-
-
-
 
 module.exports = router;
