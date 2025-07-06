@@ -3,13 +3,49 @@ const express = require('express');
 const db = require('../db');
 const router = express.Router();
 
+// S3 기본 URL. 실제 환경에서는 process.env.STATIC_BASE_URL 등을 사용해야 합니다.
+const STATIC_BASE_URL = 'https://locallink-backend.onrender.com';
+
+/**
+ * 프로그램 content 데이터 안의 모든 상대 이미지 경로를 전체 URL로 변환하는 함수
+ * @param {object} program - DB에서 가져온 프로그램 데이터 한 줄
+ * @returns {object} - 이미지 경로가 변환된 프로그램 객체
+ */
+const convertProgramContentUrls = (program) => {
+    if (!program || !program.content) {
+        return program;
+    }
+
+    const newProgram = { ...program };
+    const content = (typeof newProgram.content === 'string') ? JSON.parse(newProgram.content) : newProgram.content;
+
+    if (Array.isArray(content)) {
+        content.forEach(section => {
+            if (section.images && Array.isArray(section.images)) {
+                section.images = section.images.map(path => {
+                    if (path && !path.startsWith('http')) {
+                        return `${STATIC_BASE_URL}/${path}`;
+                    }
+                    return path;
+                });
+            }
+        });
+    }
+    newProgram.content = content;
+    return newProgram;
+};
+
+
 // GET /api/programs - 발행된 모든 프로그램 목록 조회 (공개용)
 router.get('/', async (req, res) => {
     try {
-        // ★★★ SELECT * 로 변경하여 이미지, 서비스 지역 등 모든 정보를 가져오도록 수정 ★★★
         const query = "SELECT * FROM esg_programs WHERE status = 'published' ORDER BY id ASC";
         const { rows } = await db.query(query);
-        res.status(200).json({ success: true, programs: rows });
+
+        // ★★★ 수정된 부분 ★★★
+        const processedPrograms = rows.map(convertProgramContentUrls);
+
+        res.status(200).json({ success: true, programs: processedPrograms });
     } catch (error) {
         console.error("공개용 프로그램 목록 조회 에러:", error);
         res.status(500).json({ success: false, message: "서버 에러" });
@@ -25,7 +61,11 @@ router.get('/:id', async (req, res) => {
         if (rows.length === 0) {
             return res.status(404).json({ success: false, message: "프로그램을 찾을 수 없습니다." });
         }
-        res.status(200).json({ success: true, program: rows[0] });
+        
+        // ★★★ 수정된 부분 ★★★
+        const processedProgram = convertProgramContentUrls(rows[0]);
+
+        res.status(200).json({ success: true, program: processedProgram });
     } catch (error) {
         console.error("공개용 프로그램 상세 조회 에러:", error);
         res.status(500).json({ success: false, message: "서버 에러" });
@@ -41,8 +81,13 @@ router.post('/batch-details', async (req, res) => {
     try {
         const query = 'SELECT * FROM esg_programs WHERE id = ANY($1::int[])';
         const { rows } = await db.query(query, [programIds]);
-        res.status(200).json({ success: true, programs: rows });
+
+        // ★★★ 수정된 부분 ★★★
+        const processedPrograms = rows.map(convertProgramContentUrls);
+
+        res.status(200).json({ success: true, programs: processedPrograms });
     } catch (error) {
+        console.error("배치 상세 조회 에러:", error);
         res.status(500).json({ success: false, message: '서버 에러' });
     }
 });

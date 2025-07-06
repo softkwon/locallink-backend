@@ -11,6 +11,48 @@ const checkPermission = require('../middleware/permissionMiddleware'); // 새로
 const { uploadImageToS3, deleteImageFromS3 } = require('../helpers/s3-helper');
 const router = express.Router();
 
+// S3 기본 URL. 실제 환경에서는 process.env.STATIC_BASE_URL 등을 사용하세요.
+const STATIC_BASE_URL = 'https://locallink-backend.onrender.com';
+
+/**
+ * 프로그램 content 데이터 안의 모든 상대 이미지 경로를 전체 URL로 변환하는 함수
+ * @param {object} program - DB에서 가져온 프로그램 데이터 한 줄
+ * @returns {object} - 이미지 경로가 변환된 프로그램 객체
+ */
+const convertProgramContentUrls = (program) => {
+    // 프로그램 데이터나 content가 없으면 원본 그대로 반환
+    if (!program || !program.content) {
+        return program;
+    }
+
+    // 원본 객체를 복사하여 새 객체 생성 (원본 데이터 보호)
+    const newProgram = { ...program };
+    // content 필드가 JSON 문자열일 경우 자바스크립트 객체로 변환
+    const content = (typeof newProgram.content === 'string') ? JSON.parse(newProgram.content) : newProgram.content;
+
+    // content가 배열 형태일 때만 내부 로직 실행
+    if (Array.isArray(content)) {
+        content.forEach(section => {
+            // 섹션에 images 배열이 있는지 확인
+            if (section.images && Array.isArray(section.images)) {
+                // 각 이미지 경로를 전체 URL로 변환
+                section.images = section.images.map(path => {
+                    // 경로가 있고, http로 시작하지 않는 상대 경로인 경우에만
+                    if (path && !path.startsWith('http')) {
+                        return `${STATIC_BASE_URL}/${path}`;
+                    }
+                    // 이미 전체 URL이거나 경로가 없으면 그대로 둠
+                    return path;
+                });
+            }
+        });
+    }
+    
+    // 변환된 content를 다시 할당하고 새로운 program 객체를 반환
+    newProgram.content = content;
+    return newProgram;
+};
+
 //지워도 된다는 함수들 체크필요//
 const fs = require('fs'); // ★★★ 파일 시스템 모듈 불러오기 ★★★
 const path = require('path');   // ★★★ path 불러오기 ★★★
@@ -643,8 +685,14 @@ router.get(
     async (req, res) => {
         try {
             const { rows } = await db.query('SELECT * FROM esg_programs ORDER BY id ASC');
-            res.status(200).json({ success: true, programs: rows });
+
+            // ★★★ 수정된 부분 ★★★
+            // 조회된 모든 프로그램의 이미지 경로를 전체 URL로 변환합니다.
+            const processedPrograms = rows.map(convertProgramContentUrls);
+            
+            res.status(200).json({ success: true, programs: processedPrograms });
         } catch (error) {
+            console.error('관리자용 프로그램 목록 조회 에러:', error);
             res.status(500).json({ success: false, message: '서버 에러' });
         }
     }
@@ -883,7 +931,12 @@ router.get(
             if (rows.length === 0) {
                 return res.status(404).json({ success: false, message: '해당 프로그램을 찾을 수 없습니다.' });
             }
-            res.status(200).json({ success: true, program: rows[0] });
+
+            // ★★★ 수정된 부분 ★★★
+            // 조회된 프로그램의 이미지 경로를 전체 URL로 변환합니다.
+            const processedProgram = convertProgramContentUrls(rows[0]);
+
+            res.status(200).json({ success: true, program: processedProgram });
         } catch (error) {
             console.error('프로그램 상세 조회 에러:', error);
             res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
