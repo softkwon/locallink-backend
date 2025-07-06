@@ -805,15 +805,17 @@ router.put(
     try {
         await client.query('BEGIN');
 
-        // --- 1. DB에서 수정 전 데이터 로드 및 파싱 (버그 수정) ---
+        // --- 1. DB에서 수정 전 데이터 로드 (JSON.parse 제거) ---
         const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
         const oldImageUrls = new Set();
         if (oldProgramRes.rows[0]?.content) {
-            // ★★★ 수정된 부분: DB에서 가져온 content 문자열을 JSON 객체로 파싱합니다. ★★★
-            const oldContent = JSON.parse(oldProgramRes.rows[0].content);
+            // ★★★ 수정된 부분: DB에서 이미 객체로 제공하므로 JSON.parse()를 사용하지 않습니다. ★★★
+            const oldContent = oldProgramRes.rows[0].content; 
             if (Array.isArray(oldContent)) {
                 oldContent.forEach(section => {
-                    if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
+                    if (section.images && Array.isArray(section.images)) {
+                        section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
+                    }
                 });
             }
         }
@@ -823,6 +825,7 @@ router.put(
             content, economic_effects, related_links, opportunity_effects, service_regions
         } = req.body;
         
+        // 프론트에서 온 content는 문자열이므로 파싱이 필요합니다.
         const parsedContent = JSON.parse(content);
         
         // --- 2. 새로 추가된 이미지 S3 업로드 ---
@@ -853,7 +856,14 @@ router.put(
         const imagesToDelete = [...oldImageUrls].filter(url => !finalImageUrls.has(url));
         
         if (imagesToDelete.length > 0) {
-            await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
+            // 삭제할 URL은 전체 S3 주소여야 합니다.
+            const fullUrlImagesToDelete = imagesToDelete.map(path => {
+                if (path && !path.startsWith('http')) {
+                    return `${process.env.STATIC_BASE_URL}/${path}`;
+                }
+                return path;
+            });
+            await Promise.all(fullUrlImagesToDelete.map(url => deleteImageFromS3(url)));
         }
 
         // --- 5. DB에 최종 정보 업데이트 ---
@@ -866,8 +876,8 @@ router.put(
         `;
         const values = [
             title, program_code, esg_category, program_overview, JSON.stringify(parsedContent),
-            economic_effects, related_links, risk_text, risk_description, opportunity_effects,
-            service_regions.split(','), id
+            JSON.parse(economic_effects), JSON.parse(related_links), risk_text, risk_description, 
+            JSON.parse(opportunity_effects), service_regions.split(','), id
         ];
         
         await client.query(query, values);
@@ -876,8 +886,11 @@ router.put(
 
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error(`프로그램(ID: ${id}) 수정 에러:`, error);
-        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+        console.error(`[CRITICAL] 프로그램(ID: ${id}) 수정 에러:`, error);
+        res.status(500).json({ 
+            success: false, 
+            message: error.message || '서버 에러가 발생했습니다.' 
+        });
     } finally {
         client.release();
     }
