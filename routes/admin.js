@@ -828,7 +828,7 @@ router.put(
     '/programs/:id',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
-    upload.any(), // newImages 대신 any()를 사용
+    upload.any(), // newImages 대신 any() 사용
     async (req, res) => {
     
     const { id } = req.params;
@@ -841,34 +841,34 @@ router.put(
         const oldImageUrls = new Set();
         if (oldProgramRes.rows[0]?.content) {
             const oldContent = JSON.parse(oldProgramRes.rows[0].content);
-            oldContent.forEach(section => {
-                if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
-            });
+            if(Array.isArray(oldContent)) {
+                oldContent.forEach(section => {
+                    if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
+                });
+            }
         }
 
         const { content, ...otherBodyFields } = req.body;
         const parsedContent = JSON.parse(content);
         
-        // ★★★ 핵심 수정: '뉴스' 방식과 동일하게 placeholder와 실제 URL을 처리합니다. ★★★
+        // 2. '뉴스' 방식과 동일하게 placeholder와 실제 URL을 처리
         const finalContent = await Promise.all(parsedContent.map(async (section) => {
             if (!section.images || section.images.length === 0) return section;
 
             const updatedImages = await Promise.all(section.images.map(async (imageOrPlaceholder) => {
-                // 이미 전체 URL인 경우 (기존 이미지)
                 if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('https')) {
                     return imageOrPlaceholder;
                 }
-                // 새로운 파일(placeholder)인 경우
                 const file = req.files.find(f => f.fieldname === imageOrPlaceholder);
                 if (file) {
                     return await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
                 }
-                return null;
+                return imageOrPlaceholder; // 기존 URL이나 처리 못한 placeholder 유지
             }));
             return { ...section, images: updatedImages.filter(Boolean) };
         }));
 
-        // 삭제할 이미지 찾아서 S3에서 제거
+        // 3. 삭제할 이미지 찾아서 S3에서 제거
         const finalImageUrls = new Set();
         finalContent.forEach(section => {
             if (section.images) section.images.forEach(imgUrl => finalImageUrls.add(imgUrl));
@@ -878,6 +878,7 @@ router.put(
             await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
         }
 
+        // 4. DB에 최종 정보 업데이트
         const query = `
             UPDATE esg_programs SET 
                 title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, 
@@ -885,11 +886,18 @@ router.put(
                 opportunity_effects = $10, service_regions = $11, updated_at = NOW()
             WHERE id = $12;
         `;
+
+        // ★★★ 수정된 부분: 불필요한 JSON.parse()를 모두 제거합니다. ★★★
         const values = [
             otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
-            JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
-            otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
-            otherBodyFields.service_regions.split(','), id
+            JSON.stringify(finalContent), // content는 DB 저장을 위해 다시 문자열로 변환
+            otherBodyFields.economic_effects, 
+            otherBodyFields.related_links, 
+            otherBodyFields.risk_text, 
+            otherBodyFields.risk_description, 
+            otherBodyFields.opportunity_effects,
+            otherBodyFields.service_regions.split(','), 
+            id
         ];
         
         await client.query(query, values);
@@ -898,7 +906,7 @@ router.put(
 
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error(`프로그램(ID: ${id}) 수정 에러:`, error);
+        console.error(`[CRITICAL] 프로그램(ID: ${id}) 수정 에러:`, error);
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     } finally {
         client.release();
