@@ -263,15 +263,47 @@ router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'user_m
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// PUT /api/admin/inquiries/:id/status - 문의 상태 변경
+/**
+ * 파일명: routes/admin.js
+ * 수정 위치: PUT /api/admin/inquiries/:id/status
+ * 수정 일시: 2025-07-07 00:18
+ */
+// PUT /api/admin/inquiries/:id/status - 문의 상태 변경 (+답변 시 알림 추가)
 router.put('/inquiries/:id/status', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
+    const client = await db.pool.connect(); // 트랜잭션을 위해 client 사용
     try {
-        const { rowCount } = await db.query('UPDATE inquiries SET status = $1 WHERE id = $2', [status, id]);
-        if (rowCount === 0) return res.status(404).json({ success: false, message: '문의를 찾을 수 없습니다.' });
+        await client.query('BEGIN');
+
+        // 1. 문의 상태 업데이트
+        const { rowCount } = await client.query('UPDATE inquiries SET status = $1 WHERE id = $2', [status, id]);
+        if (rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: '문의를 찾을 수 없습니다.' });
+        }
+
+        // ★★★ 2. 알림 생성 로직 추가 ★★★
+        const inquiryRes = await client.query('SELECT user_id, title FROM inquiries WHERE id = $1', [id]);
+        const { user_id, title } = inquiryRes.rows[0];
+        
+        const message = `문의하신 '${title}'의 처리 상태가 [${status}](으)로 변경되었습니다.`;
+        const link_url = `/mypage_inquiry.html`; // 문의내역 페이지로 이동
+        
+        await client.query(
+            'INSERT INTO notifications (user_id, message, link_url) VALUES ($1, $2, $3)',
+            [user_id, message, link_url]
+        );
+
+        await client.query('COMMIT');
         res.status(200).json({ success: true, message: '상태가 변경되었습니다.' });
-    } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
+
+    } catch (error) { 
+        await client.query('ROLLBACK');
+        res.status(500).json({ success: false, message: '서버 에러' }); 
+    } finally {
+        client.release();
+    }
 });
 
 // DELETE /api/admin/inquiries/:id - 문의 삭제
@@ -2578,5 +2610,85 @@ router.delete('/users/:id', authMiddleware, checkPermission(['super_admin']), as
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
 });
+
+// --- ▼▼▼ 프로그램 신청 현황 관리 API 추가 ▼▼▼ ---
+
+// GET /api/admin/applications - 모든 프로그램 신청 현황 조회
+router.get('/applications', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+    try {
+        // 여러 테이블을 JOIN하여 필요한 모든 정보를 한 번에 가져옵니다.
+        const query = `
+            SELECT 
+                ua.id,
+                ua.status, -- 신청 상태 추가
+                ua.created_at,
+                u.company_name,
+                u.manager_name,
+                u.manager_phone,
+                u.email,
+                p.title AS program_title
+            FROM 
+                user_applications ua
+            JOIN 
+                users u ON ua.user_id = u.id
+            JOIN 
+                esg_programs p ON ua.program_id = p.id
+            ORDER BY 
+                ua.created_at DESC;
+        `;
+        const { rows } = await db.query(query);
+        res.status(200).json({ success: true, applications: rows });
+    } catch (error) {
+        console.error("신청 현황 조회 에러:", error);
+        res.status(500).json({ success: false, message: "서버 에러" });
+    }
+});
+
+// PUT /api/admin/applications/:id/status - 프로그램 신청 상태 변경 및 알림 생성 API
+router.put('/applications/:id/status', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    // 유효한 상태 값인지 확인
+    if (!['접수', '진행', '완료'].includes(status)) {
+        return res.status(400).json({ success: false, message: '유효하지 않은 상태 값입니다.' });
+    }
+
+    const client = await db.pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. 신청 상태 업데이트
+        const updateRes = await client.query('UPDATE user_applications SET status = $1 WHERE id = $2 RETURNING user_id, program_id', [status, id]);
+        if (updateRes.rows.length === 0) {
+            throw new Error('해당 신청 내역을 찾을 수 없습니다.');
+        }
+
+        // 2. 알림 생성을 위한 정보 가져오기
+        const { user_id, program_id } = updateRes.rows[0];
+        const programRes = await client.query('SELECT title FROM esg_programs WHERE id = $1', [program_id]);
+        const programTitle = programRes.rows[0].title;
+
+        // 3. 알림 메시지 생성 및 DB에 저장
+        const message = `신청하신 '${programTitle}' 프로그램의 진행 상태가 [${status}](으)로 변경되었습니다.`;
+        const link_url = '/mypage_program.html'; // 사용자가 확인할 페이지 경로
+
+        await client.query(
+            'INSERT INTO notifications (user_id, message, link_url) VALUES ($1, $2, $3)',
+            [user_id, message, link_url]
+        );
+
+        await client.query('COMMIT');
+        res.status(200).json({ success: true, message: `신청 상태가 [${status}] (으)로 변경되었습니다.` });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error(`신청(ID: ${id}) 상태 변경 에러:`, error);
+        res.status(500).json({ success: false, message: error.message || '서버 에러 발생' });
+    } finally {
+        client.release();
+    }
+});
+
 
 module.exports = router;

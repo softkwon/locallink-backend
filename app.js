@@ -36,6 +36,8 @@ const programRoutes = require('./routes/programs');
 const applicationRoutes = require('./routes/applications');
 const simulatorRoutes = require('./routes/simulator');
 const newsRoutes = require('./routes/news');
+const notificationRoutes = require('./routes/notifications'); // ◀◀◀ 추가
+
 
 const app = express();
 
@@ -68,6 +70,8 @@ app.use('/api/programs', programRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/simulator', simulatorRoutes);
 app.use('/api/news', newsRoutes);
+app.use('/api/notifications', notificationRoutes); // ◀◀◀ 추가
+
 
 // 기본 라우트
 app.get('/', (req, res) => {
