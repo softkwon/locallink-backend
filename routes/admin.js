@@ -932,8 +932,14 @@ router.delete(
             res.status(200).json({ success: true, message: '프로그램이 성공적으로 삭제되었습니다.' });
         } catch (error) {
             await client.query('ROLLBACK');
-            console.error('프로그램 삭제 에러:', error);
-            res.status(500).json({ success: false, message: '서버 에러' });
+            // ★★★ 수정된 부분: 콘솔에 상세 에러를 모두 출력합니다. ★★★
+            console.error(`[CRITICAL] 프로그램(ID: ${id}) 수정 에러:`, error); 
+            
+            // ★★★ 수정된 부분: 프론트엔드에 더 구체적인 에러 메시지를 보냅니다. ★★★
+            res.status(500).json({ 
+                success: false, 
+                message: error.message || '서버 에러가 발생했습니다.' 
+            });
         } finally {
             client.release();
         }
