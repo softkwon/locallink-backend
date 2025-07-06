@@ -717,23 +717,37 @@ router.post(
 /**
  * 파일명: routes/admin.js
  * 수정 위치: PUT /api/admin/programs/:id
- * 수정 일시: 2025-07-06 08:35
+ * 수정 일시: 2025-07-06 11:45
  */
 router.put(
     '/programs/:id',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
-    upload.array('newImages'), // 수정 시에도 'newImages' 키로 새 파일들을 받음
+    upload.array('newImages'), // 'newImages' 키로 전송된 모든 새 파일을 받습니다.
     async (req, res) => {
+    
     const { id } = req.params;
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
 
-        const { content, ...otherBodyFields } = req.body;
+        // --- 1. DB에서 수정 전의 기존 이미지 URL 목록을 미리 가져옵니다. ---
+        const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
+        const oldImageUrls = new Set();
+        if (oldProgramRes.rows[0]?.content) {
+            oldProgramRes.rows[0].content.forEach(section => {
+                if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
+            });
+        }
+
+        const { 
+            title, program_code, esg_category, program_overview, risk_text, risk_description,
+            content, economic_effects, related_links, opportunity_effects, service_regions
+        } = req.body;
+        
         const parsedContent = JSON.parse(content);
         
-        // 새 이미지가 있다면 S3에 업로드하고 URL 맵을 생성
+        // --- 2. 새로 추가된 이미지가 있다면 S3에 업로드하고, '파일이름 -> S3 URL' 맵을 만듭니다. ---
         const uploadedUrlMap = new Map();
         if (req.files && req.files.length > 0) {
             const uploadPromises = req.files.map(async (file) => {
@@ -743,25 +757,42 @@ router.put(
             await Promise.all(uploadPromises);
         }
         
-        // content 데이터의 이미지 목록을 최종본으로 업데이트
+        // --- 3. 최종적으로 저장될 content의 이미지 목록을 완성합니다. ---
+        // (기존 S3 URL은 그대로 두고, 새 파일의 이름(placeholder)만 실제 S3 URL로 교체)
         parsedContent.forEach(section => {
-            if (section.images && section.images.length > 0) {
-                // 기존 S3 URL은 그대로 두고, 새 파일 이름만 실제 S3 URL로 교체
-                section.images = section.images.map(imageIdentifier => uploadedUrlMap.get(imageIdentifier) || imageIdentifier);
+            if (section.images && Array.isArray(section.images)) {
+                section.images = section.images.map(imageIdentifier => {
+                    // imageIdentifier가 파일 이름이면(새 이미지), Map에서 S3 URL을 찾고, 아니면(기존 URL) 그대로 둡니다.
+                    return uploadedUrlMap.get(imageIdentifier) || imageIdentifier;
+                });
             }
         });
 
+        // --- 4. 수정 후 남은 이미지들과 수정 전 이미지들을 비교하여, 삭제된 이미지를 찾습니다. ---
+        const finalImageUrls = new Set();
+        parsedContent.forEach(section => {
+            if (section.images) section.images.forEach(imgUrl => finalImageUrls.add(imgUrl));
+        });
+
+        const imagesToDelete = [...oldImageUrls].filter(url => !finalImageUrls.has(url));
+        
+        // --- 5. S3에서 삭제된 이미지들을 실제로 제거합니다. ---
+        if (imagesToDelete.length > 0) {
+            await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
+        }
+
+        // --- 6. DB에 모든 최종 정보를 업데이트합니다. ---
         const query = `
             UPDATE esg_programs SET 
-                title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, economic_effects = $6, 
-                related_links = $7, risk_text = $8, risk_description = $9, opportunity_effects = $10, service_regions = $11, updated_at = NOW()
+                title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, 
+                economic_effects = $6, related_links = $7, risk_text = $8, risk_description = $9, 
+                opportunity_effects = $10, service_regions = $11, updated_at = NOW()
             WHERE id = $12;
         `;
         const values = [
-            otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
-            JSON.stringify(parsedContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
-            otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
-            otherBodyFields.service_regions.split(','), id
+            title, program_code, esg_category, program_overview, JSON.stringify(parsedContent),
+            economic_effects, related_links, risk_text, risk_description, opportunity_effects,
+            service_regions.split(','), id
         ];
         
         await client.query(query, values);
