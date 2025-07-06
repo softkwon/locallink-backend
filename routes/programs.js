@@ -20,10 +20,8 @@ const processProgramData = (program) => {
             try {
                 newProgram[field] = JSON.parse(newProgram[field]);
             } catch (e) {
-                console.error(`Error parsing JSON for field ${field} in program ${newProgram.id}:`, e);
-                // 필드의 종류에 따라 기본값을 다르게 설정할 수 있습니다.
-                // 대부분 배열 형태이므로 빈 배열로 초기화합니다.
-                newProgram[field] = [];
+                console.error(`[CRITICAL] JSON 파싱 오류! (Program ID: ${newProgram.id}, Field: ${field})`, e);
+                newProgram[field] = []; // 파싱 오류 시 빈 배열로 초기화
             }
         }
     });
@@ -51,11 +49,8 @@ router.get('/', async (req, res) => {
     try {
         const query = "SELECT * FROM esg_programs WHERE status = 'published' ORDER BY id ASC";
         const { rows } = await db.query(query);
-
-        // ★★★ 수정된 부분 ★★★
         const processedPrograms = rows.map(processProgramData);
         res.status(200).json({ success: true, programs: processedPrograms });
-
     } catch (error) {
         console.error("공개용 프로그램 목록 조회 에러:", error);
         res.status(500).json({ success: false, message: "서버 에러" });
@@ -72,12 +67,18 @@ router.get('/:id', async (req, res) => {
             return res.status(404).json({ success: false, message: "프로그램을 찾을 수 없습니다." });
         }
         
-        // ★★★ 수정된 부분 ★★★
         const processedProgram = processProgramData(rows[0]);
+
+        // ★★★ 디버깅용 로그 추가 ★★★
+        // 이 로그를 통해 서버가 프론트로 보내기 직전의 데이터 타입을 확인할 수 있습니다.
+        console.log(`[DEBUG] Program ID ${id} 데이터 처리 결과:`);
+        console.log(`[DEBUG]   - related_links 타입: ${typeof processedProgram.related_links}`);
+        console.log(`[DEBUG]   - opportunity_effects 타입: ${typeof processedProgram.opportunity_effects}`);
+        
         res.status(200).json({ success: true, program: processedProgram });
 
     } catch (error) {
-        console.error("공개용 프로그램 상세 조회 에러:", error);
+        console.error(`공개용 프로그램 상세 조회 에러 (ID: ${id}):`, error);
         res.status(500).json({ success: false, message: "서버 에러" });
     }
 });
@@ -91,11 +92,8 @@ router.post('/batch-details', async (req, res) => {
     try {
         const query = 'SELECT * FROM esg_programs WHERE id = ANY($1::int[])';
         const { rows } = await db.query(query, [programIds]);
-
-        // ★★★ 수정된 부분 ★★★
         const processedPrograms = rows.map(processProgramData);
         res.status(200).json({ success: true, programs: processedPrograms });
-        
     } catch (error) {
         console.error("배치 상세 조회 에러:", error);
         res.status(500).json({ success: false, message: '서버 에러' });
