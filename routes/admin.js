@@ -766,13 +766,7 @@ router.get('/programs', authMiddleware, checkPermission(['super_admin', 'content
  * 수정 위치: POST /api/admin/programs
  * 수정 일시: 2025-07-06 10:48
  */
-router.post(
-    '/programs',
-    authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
-    upload.array('newImages'), // 'newImages' 키로 전송된 모든 파일을 받음
-    async (req, res) => {
-    
+router.post('/programs', authMiddleware, checkPermission(['super_admin', 'content_manager']), upload.array('newImages'), async (req, res) => {
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
@@ -780,27 +774,30 @@ router.post(
         const { content, ...otherBodyFields } = req.body;
         const parsedContent = JSON.parse(content);
         
-        // 업로드된 파일의 원래 이름과 S3 URL을 매핑할 Map 생성
-        const uploadedUrlMap = new Map(); 
+        // ★★★ 핵심 수정 부분 ★★★
+        // 1. 새로 업로드된 파일들의 실제 S3 경로를 Map에 저장합니다.
+        const s3UrlMap = new Map(); 
         if (req.files && req.files.length > 0) {
             const uploadPromises = req.files.map(async (file) => {
-                const imageUrl = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
-                uploadedUrlMap.set(file.originalname, imageUrl); // '파일이름' -> 'S3 URL'
+                // uploadImageToS3는 'programs/고유ID.png' 형태의 실제 경로를 반환합니다.
+                const s3Path = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
+                s3UrlMap.set(file.originalname, s3Path); // 원본 파일명 -> 실제 S3 경로
             });
             await Promise.all(uploadPromises);
         }
         
-        // content 데이터의 이미지 이름들을 실제 S3 URL로 교체
+        // 2. content 데이터의 이미지 이름들을 실제 S3 경로로 교체합니다.
         parsedContent.forEach(section => {
             if (section.images && section.images.length > 0) {
-                section.images = section.images.map(imageName => uploadedUrlMap.get(imageName) || imageName);
+                // 원본 파일명 대신, Map에서 찾은 실제 S3 경로를 저장합니다.
+                section.images = section.images.map(imageName => s3UrlMap.get(imageName) || imageName);
             }
         });
         
-        // DB에 최종 데이터 저장
+        // 3. DB에 최종 데이터 저장
         const query = `
-            INSERT INTO esg_programs (title, program_code, esg_category, program_overview, content, economic_effects, related_links, risk_text, risk_description, opportunity_effects, service_regions) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id;
+            INSERT INTO esg_programs (title, program_code, esg_category, program_overview, content, economic_effects, related_links, risk_text, risk_description, opportunity_effects, service_regions, status) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'published') RETURNING id;
         `;
         const values = [
             otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
@@ -826,80 +823,53 @@ router.post(
  * 수정 위치: PUT /api/admin/programs/:id
  * 수정 일시: 2025-07-06 11:45
  */
-router.put(
-    '/programs/:id',
-    authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
-    upload.array('newImages'),
-    async (req, res) => {
-    
+router.put('/programs/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), upload.array('newImages'), async (req, res) => {
     const { id } = req.params;
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
 
-        // --- 1. DB에서 수정 전 데이터 로드 (JSON.parse 제거) ---
         const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
         const oldImageUrls = new Set();
         if (oldProgramRes.rows[0]?.content) {
-            // ★★★ 수정된 부분: DB에서 이미 객체로 제공하므로 JSON.parse()를 사용하지 않습니다. ★★★
-            const oldContent = oldProgramRes.rows[0].content; 
-            if (Array.isArray(oldContent)) {
-                oldContent.forEach(section => {
-                    if (section.images && Array.isArray(section.images)) {
-                        section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
-                    }
-                });
-            }
+            const oldContent = Array.isArray(oldProgramRes.rows[0].content) ? oldProgramRes.rows[0].content : JSON.parse(oldProgramRes.rows[0].content);
+            oldContent.forEach(section => {
+                if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
+            });
         }
 
-        const { 
-            title, program_code, esg_category, program_overview, risk_text, risk_description,
-            content, economic_effects, related_links, opportunity_effects, service_regions
-        } = req.body;
-        
-        // 프론트에서 온 content는 문자열이므로 파싱이 필요합니다.
+        const { content, ...otherBodyFields } = req.body;
         const parsedContent = JSON.parse(content);
         
-        // --- 2. 새로 추가된 이미지 S3 업로드 ---
-        const uploadedUrlMap = new Map();
+        // ★★★ 핵심 수정 부분 (생성 API와 동일) ★★★
+        const s3UrlMap = new Map();
         if (req.files && req.files.length > 0) {
             const uploadPromises = req.files.map(async (file) => {
-                const imageUrl = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
-                uploadedUrlMap.set(file.originalname, imageUrl);
+                const s3Path = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
+                s3UrlMap.set(file.originalname, s3Path);
             });
             await Promise.all(uploadPromises);
         }
         
-        // --- 3. 최종 content 데이터 생성 ---
         parsedContent.forEach(section => {
             if (section.images && Array.isArray(section.images)) {
                 section.images = section.images.map(imageIdentifier => {
-                    return uploadedUrlMap.get(imageIdentifier) || imageIdentifier;
+                    // 새 이미지(파일명)는 실제 S3 경로로, 기존 이미지(URL)는 그대로 둡니다.
+                    return s3UrlMap.get(imageIdentifier) || imageIdentifier;
                 });
             }
         });
 
-        // --- 4. 삭제할 이미지 식별 및 S3에서 제거 ---
         const finalImageUrls = new Set();
         parsedContent.forEach(section => {
             if (section.images) section.images.forEach(imgUrl => finalImageUrls.add(imgUrl));
         });
 
         const imagesToDelete = [...oldImageUrls].filter(url => !finalImageUrls.has(url));
-        
         if (imagesToDelete.length > 0) {
-            // 삭제할 URL은 전체 S3 주소여야 합니다.
-            const fullUrlImagesToDelete = imagesToDelete.map(path => {
-                if (path && !path.startsWith('http')) {
-                    return `${process.env.STATIC_BASE_URL}/${path}`;
-                }
-                return path;
-            });
-            await Promise.all(fullUrlImagesToDelete.map(url => deleteImageFromS3(url)));
+            await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
         }
 
-        // --- 5. DB에 최종 정보 업데이트 ---
         const query = `
             UPDATE esg_programs SET 
                 title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, 
@@ -908,9 +878,10 @@ router.put(
             WHERE id = $12;
         `;
         const values = [
-            title, program_code, esg_category, program_overview, JSON.stringify(parsedContent),
-            JSON.parse(economic_effects), JSON.parse(related_links), risk_text, risk_description, 
-            JSON.parse(opportunity_effects), service_regions.split(','), id
+            otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
+            JSON.stringify(parsedContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
+            otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
+            otherBodyFields.service_regions.split(','), id
         ];
         
         await client.query(query, values);
@@ -919,11 +890,8 @@ router.put(
 
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error(`[CRITICAL] 프로그램(ID: ${id}) 수정 에러:`, error);
-        res.status(500).json({ 
-            success: false, 
-            message: error.message || '서버 에러가 발생했습니다.' 
-        });
+        console.error(`프로그램(ID: ${id}) 수정 에러:`, error);
+        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     } finally {
         client.release();
     }
