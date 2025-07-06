@@ -273,23 +273,22 @@ router.put('/inquiries/:id/status', authMiddleware, checkPermission(['super_admi
     const { id } = req.params;
     const { status, reply } = req.body; 
 
-    // ★★★ 트랜잭션 처리를 위해 client를 사용합니다. ★★★
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
 
-        // 1. 문의 상태와 답변 내용을 업데이트합니다.
-        const updateQuery = 'UPDATE inquiries SET status = $1, reply = $2, replied_at = CASE WHEN $1 = \'resolved\' THEN NOW() ELSE replied_at END WHERE id = $3 RETURNING user_id, title';
+        // ★★★ 수정된 부분 1: RETURNING 절에서 title 대신 inquiry_type을 가져옵니다. ★★★
+        const updateQuery = 'UPDATE inquiries SET status = $1, reply = $2, replied_at = CASE WHEN $1 = \'resolved\' THEN NOW() ELSE replied_at END WHERE id = $3 RETURNING user_id, inquiry_type';
         const result = await client.query(updateQuery, [status, reply, id]);
 
         if (result.rows.length === 0) {
             throw new Error('문의를 찾을 수 없습니다.');
         }
         
-        // 2. 상태가 'resolved' (완료)일 때만 알림을 생성합니다.
         if (status === 'resolved') {
             const inquiry = result.rows[0];
-            const message = `문의하신 "${inquiry.title}"에 답변이 등록되었습니다.`;
+            // ★★★ 수정된 부분 2: title 대신 inquiry_type으로 알림 메시지를 생성합니다. ★★★
+            const message = `문의하신 '[${inquiry.inquiry_type}]'에 대한 답변이 등록되었습니다.`;
             const link_url = '/mypage_inquiry.html';
             
             await client.query(
