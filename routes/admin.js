@@ -689,13 +689,16 @@ router.post(
     }
 });
 
-// --- ▼▼▼ 특정 프로그램 정보 조회 API 추가 ▼▼▼ ---
-// PUT /programs/:id - 특정 프로그램 정보 수정
+/**
+ * 파일명: routes/admin.js
+ * 수정 위치: PUT /api/admin/programs/:id
+ * 수정 일시: 2025-07-06 08:35
+ */
 router.put(
     '/programs/:id', 
     authMiddleware, 
     checkPermission(['super_admin', 'content_manager']),
-    upload.array('newImages'),
+    upload.array('newImages'), // 새로 추가될 이미지를 받습니다.
     async (req, res) => {
         
     const { id } = req.params;
@@ -703,6 +706,15 @@ router.put(
     try {
         await client.query('BEGIN');
         
+        // 1. DB에서 수정 전의 기존 이미지 URL 목록을 미리 가져옵니다.
+        const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
+        const oldImageUrls = new Set();
+        if (oldProgramRes.rows.length > 0 && oldProgramRes.rows[0].content) {
+            oldProgramRes.rows[0].content.forEach(section => {
+                if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
+            });
+        }
+
         const { 
             title, program_code, esg_category, program_overview, risk_text, risk_description,
             content, economic_effects, related_links, opportunity_effects, service_regions
@@ -710,22 +722,41 @@ router.put(
 
         const parsedContent = JSON.parse(content);
         
-        // ★★★ 새로 업로드된 이미지들을 S3에 올리고 URL 목록을 받습니다. ★★★
+        // 2. 새로 업로드된 이미지들을 S3에 올리고 URL 목록을 받습니다.
         const newImageUrls = [];
         if (req.files && req.files.length > 0) {
-            for (const file of req.files) {
-                const imageUrl = await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
-                newImageUrls.push(imageUrl);
-            }
+            // Promise.all을 사용해 여러 파일을 동시에 업로드합니다.
+            const uploadPromises = req.files.map(file => 
+                uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId)
+            );
+            const resolvedUrls = await Promise.all(uploadPromises);
+            newImageUrls.push(...resolvedUrls);
         }
         
-        // ★★★ 새 이미지 URL들을 content 데이터의 첫 번째 섹션에 추가합니다. ★★★
-        // (기존 로직과 동일하게 첫 번째 섹션에 추가, 필요시 이 로직은 프론트에서 보내주는 정보에 따라 변경 가능)
-        if (parsedContent.length > 0 && newImageUrls.length > 0) {
+        // 3. 프론트엔드에서 보낸 '남겨진 이미지'와 '새로운 이미지'를 합칩니다.
+        // (이 로직은 프론트엔드에서 content 데이터를 어떻게 보내주는지에 따라 달라질 수 있습니다.)
+        // 가장 단순한 예: 첫 번째 섹션에 새 이미지를 모두 추가
+        if (parsedContent.length > 0) {
             if (!parsedContent[0].images) parsedContent[0].images = [];
+            // 기존 이미지 URL과 새 이미지 URL을 합칩니다.
+            // (프론트에서 이미 기존 URL을 content에 포함해서 보냈다면, newImageUrls만 추가)
             parsedContent[0].images.push(...newImageUrls);
         }
 
+        // 4. 수정 후의 최종 이미지 URL 목록과 비교하여 삭제된 이미지를 찾습니다.
+        const finalImageUrls = new Set();
+        parsedContent.forEach(section => {
+            if (section.images) section.images.forEach(imgUrl => finalImageUrls.add(imgUrl));
+        });
+
+        const imagesToDelete = [...oldImageUrls].filter(url => !finalImageUrls.has(url));
+
+        // 5. S3에서 삭제된 이미지들을 제거합니다.
+        if (imagesToDelete.length > 0) {
+            await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
+        }
+
+        // 6. DB에 최종 데이터를 업데이트합니다.
         const query = `
             UPDATE esg_programs SET 
                 title = $1, program_code = $2, esg_category = $3, content = $4, 
