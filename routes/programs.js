@@ -3,6 +3,47 @@ const express = require('express');
 const db = require('../db');
 const router = express.Router();
 
+/**
+ * 프로그램 데이터의 모든 JSON 필드를 파싱하고, 이미지 경로를 전체 URL로 변환하는 통합 함수
+ * @param {object} program - DB에서 가져온 프로그램 데이터 한 줄
+ * @returns {object} - 모든 경로와 JSON이 처리된 프로그램 객체
+ */
+const processProgramData = (program) => {
+    if (!program) return program;
+
+    const newProgram = { ...program };
+    const jsonFields = ['content', 'economic_effects', 'related_links', 'opportunity_effects'];
+
+    // 1. 문자열 상태인 JSON 필드를 모두 실제 객체/배열로 변환
+    jsonFields.forEach(field => {
+        if (newProgram[field] && typeof newProgram[field] === 'string') {
+            try {
+                newProgram[field] = JSON.parse(newProgram[field]);
+            } catch (e) {
+                console.error(`Error parsing JSON for field ${field} in program ${newProgram.id}:`, e);
+                newProgram[field] = []; // 파싱 오류 시 빈 배열로 초기화
+            }
+        }
+    });
+
+    // 2. content 안의 이미지 경로를 전체 URL로 변환
+    if (newProgram.content && Array.isArray(newProgram.content)) {
+        newProgram.content.forEach(section => {
+            if (section.images && Array.isArray(section.images)) {
+                section.images = section.images.map(path => {
+                    if (path && !path.startsWith('http')) {
+                        // 서버 환경변수에 설정된 올바른 S3 주소를 사용합니다.
+                        return `${process.env.STATIC_BASE_URL}/${path}`;
+                    }
+                    return path;
+                });
+            }
+        });
+    }
+
+    return newProgram;
+};
+
 // GET /api/programs - 발행된 모든 프로그램 목록 조회 (공개용)
 router.get('/', async (req, res) => {
     try {
