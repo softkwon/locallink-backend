@@ -47,8 +47,8 @@ app.use(cors({
         'http://127.0.0.1:5500', 
         'http://localhost:5500',
         'https://locallink-frontend.vercel.app',
-        'https://www.locallink-ai.com',      // ★ www가 붙은 주소
-        'https://locallink-ai.com'           // ★ www가 없는 주소
+        'https://esglink.co.kr',
+        'https://www.esglink.co.kr',          
     ],
     credentials: true
 }));
