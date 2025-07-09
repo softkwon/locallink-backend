@@ -1860,7 +1860,7 @@ router.put('/answer-rules/:id', authMiddleware, checkPermission(['super_admin', 
 });
 
 // DELETE /api/admin/answer-rules/:id - 특정 답변 추정 규칙 삭제
-router.delete('/answer-rules/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+router.delete('/answer-rules/:id', authMiddleware, checkPermission(['super_admin', '']), async (req, res) => {
     const { id } = req.params;
     try {
         const { rowCount } = await db.query('DELETE FROM average_to_answer_rules WHERE id = $1', [id]);
@@ -2055,7 +2055,7 @@ router.put(
 router.delete(
     '/partners/:id',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', '']),
     async (req, res) => {
         const { id } = req.params;
         try {
@@ -2099,7 +2099,7 @@ router.get('/site-meta', authMiddleware, async (req, res) => {
 router.put(
     '/site-meta',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', '']),
     upload.single('metaImage'), // 'metaImage' 필드로 새 썸네일 이미지를 받습니다.
     async (req, res) => {
         const { title, description, existing_image_url } = req.body;
@@ -2434,7 +2434,7 @@ router.patch('/news/:id/status', authMiddleware, checkPermission(['super_admin']
 });
 
 // DELETE /api/admin/news/:id - 게시물 삭제
-router.delete('/news/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+router.delete('/news/:id', authMiddleware, checkPermission(['super_admin', '']), async (req, res) => {
     const { id } = req.params;
     try {
         // 1. DB에서 삭제할 게시물의 이미지 URL들을 가져옵니다.
