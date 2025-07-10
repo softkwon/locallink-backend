@@ -1965,17 +1965,12 @@ router.get(
     checkPermission(['super_admin', 'content_manager']),
     async (req, res) => {
         try {
-            const { rows } = await db.query('SELECT * FROM partners ORDER BY id ASC');
+            const { rows } = await db.query('SELECT * FROM partners ORDER BY display_order ASC');
 
-            // ★★★ 수정된 부분 ★★★
-            // 조회된 모든 협력사 목록을 순회하며 logo_url을 전체 S3 주소로 변환합니다.
             const processedPartners = rows.map(partner => {
-                // 로고 URL이 존재하고, http로 시작하지 않는 상대 경로일 경우
                 if (partner.logo_url && !partner.logo_url.startsWith('http')) {
-                    // 환경 변수에 저장된 S3 주소를 앞에 붙여줍니다.
                     return { ...partner, logo_url: `${process.env.STATIC_BASE_URL}/${partner.logo_url}` };
                 }
-                // 이미 전체 주소이거나 URL이 없는 경우는 그대로 반환합니다.
                 return partner;
             });
 
@@ -2004,14 +1999,22 @@ router.post(
             // 1. S3 헬퍼를 사용해 이미지를 업로드하고 최종 URL을 받습니다.
             const logoUrl = await uploadImageToS3(req.file.buffer, req.file.originalname, 'partners', req.user.userId);
 
-            // 2. DB에 텍스트 정보와 S3 이미지 URL을 저장합니다.
-            const query = 'INSERT INTO partners (name, logo_url, link_url) VALUES ($1, $2, $3) RETURNING id';
-            await db.query(query, [name, logoUrl, link_url]);
+            // ★★★ 추가된 부분: 가장 큰 순서 값을 찾아 +1 합니다. ★★★
+            const orderRes = await client.query('SELECT MAX(display_order) as max_order FROM partners');
+            const newOrder = (orderRes.rows[0].max_order || 0) + 1;
+
+            // ★★★ 수정된 부분: display_order를 함께 INSERT 합니다. ★★★
+            const query = 'INSERT INTO partners (name, logo_url, link_url, display_order) VALUES ($1, $2, $3, $4) RETURNING id';
+            await client.query(query, [name, logoUrl, link_url, newOrder]);
             
+            await client.query('COMMIT');        
             res.status(201).json({ success: true, message: '새로운 협력사가 추가되었습니다.' });
         } catch (error) { 
+            await client.query('ROLLBACK');
             console.error("협력사 추가 에러:", error);
             res.status(500).json({ success: false, message: '서버 에러' }); 
+        } finally {
+            client.release();
         }
     }
 );
@@ -2051,6 +2054,45 @@ router.put(
         }
     }
 );
+
+// POST /api/admin/partners/reorder - 파트너 순서 변경
+router.post('/partners/reorder', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+    const { partnerId, direction } = req.body; // { partnerId: 5, direction: 'up' }
+
+    const client = await db.pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const currentRes = await client.query('SELECT display_order FROM partners WHERE id = $1', [partnerId]);
+        if (currentRes.rows.length === 0) throw new Error('해당 파트너를 찾을 수 없습니다.');
+        const currentOrder = currentRes.rows[0].display_order;
+
+        let otherRes;
+        if (direction === 'up') {
+            // 현재 순서보다 작은 것 중 가장 큰(가까운) 것을 찾음
+            otherRes = await client.query('SELECT id, display_order FROM partners WHERE display_order < $1 ORDER BY display_order DESC LIMIT 1', [currentOrder]);
+        } else { // 'down'
+            // 현재 순서보다 큰 것 중 가장 작은(가까운) 것을 찾음
+            otherRes = await client.query('SELECT id, display_order FROM partners WHERE display_order > $1 ORDER BY display_order ASC LIMIT 1', [currentOrder]);
+        }
+
+        // 바꿀 대상이 있으면, 두 파트너의 display_order 값을 서로 맞바꿈
+        if (otherRes.rows.length > 0) {
+            const otherPartner = otherRes.rows[0];
+            await client.query('UPDATE partners SET display_order = $1 WHERE id = $2', [otherPartner.display_order, partnerId]);
+            await client.query('UPDATE partners SET display_order = $1 WHERE id = $2', [currentOrder, otherPartner.id]);
+        }
+
+        await client.query('COMMIT');
+        res.status(200).json({ success: true, message: '순서가 변경되었습니다.' });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('파트너 순서 변경 에러:', error);
+        res.status(500).json({ success: false, message: '서버 에러' });
+    } finally {
+        client.release();
+    }
+});
 
 // DELETE /api/admin/partners/:id - 특정 협력사 삭제 (S3 삭제 기능 포함)
 router.delete(
