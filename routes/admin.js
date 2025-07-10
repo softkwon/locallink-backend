@@ -1987,32 +1987,33 @@ router.post(
     '/partners',
     authMiddleware,
     checkPermission(['super_admin', 'content_manager']),
-    upload.single('partnerLogo'), // 'partnerLogo' 필드로 이미지 파일을 받습니다.
+    upload.single('partnerLogo'),
     async (req, res) => {
         const { name, link_url } = req.body;
-        
         if (!req.file) {
             return res.status(400).json({ success: false, message: '로고 이미지를 선택해주세요.' });
         }
 
+        // ★★★ 수정된 부분: 트랜잭션을 위해 client를 선언합니다. ★★★
+        const client = await db.pool.connect();
         try {
-            // 1. S3 헬퍼를 사용해 이미지를 업로드하고 최종 URL을 받습니다.
+            await client.query('BEGIN');
+
             const logoUrl = await uploadImageToS3(req.file.buffer, req.file.originalname, 'partners', req.user.userId);
 
-            // ★★★ 추가된 부분: 가장 큰 순서 값을 찾아 +1 합니다. ★★★
             const orderRes = await client.query('SELECT MAX(display_order) as max_order FROM partners');
             const newOrder = (orderRes.rows[0].max_order || 0) + 1;
 
-            // ★★★ 수정된 부분: display_order를 함께 INSERT 합니다. ★★★
             const query = 'INSERT INTO partners (name, logo_url, link_url, display_order) VALUES ($1, $2, $3, $4) RETURNING id';
             await client.query(query, [name, logoUrl, link_url, newOrder]);
             
-            await client.query('COMMIT');        
+            await client.query('COMMIT'); 
             res.status(201).json({ success: true, message: '새로운 협력사가 추가되었습니다.' });
+
         } catch (error) { 
             await client.query('ROLLBACK');
             console.error("협력사 추가 에러:", error);
-            res.status(500).json({ success: false, message: '서버 에러' }); 
+            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' }); 
         } finally {
             client.release();
         }
