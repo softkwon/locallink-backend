@@ -2249,6 +2249,49 @@ router.get('/applications', authMiddleware, checkPermission(['super_admin', 'use
     }
 });
 
+// GET /api/admin/applications/export - 프로그램 신청 현황 CSV로 내보내기
+router.get('/applications/export', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                ua.id as "신청ID",
+                u.company_name as "회사명",
+                u.manager_name as "담당자",
+                u.manager_phone as "연락처",
+                u.email as "이메일",
+                p.title AS "신청 프로그램",
+                ua.status as "진행상태",
+                TO_CHAR(ua.created_at, 'YYYY-MM-DD HH24:MI:SS') as "신청일시"
+            FROM 
+                user_applications ua
+            JOIN 
+                users u ON ua.user_id = u.id
+            JOIN 
+                esg_programs p ON ua.program_id = p.id
+            ORDER BY 
+                ua.created_at DESC;
+        `;
+        const { rows } = await db.query(query);
+
+        if (rows.length === 0) {
+            return res.status(404).send('내보낼 데이터가 없습니다.');
+        }
+
+        // csv-stringify를 사용하여 CSV 문자열 생성
+        const csvString = stringify(rows, { header: true });
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="applications-${new Date().toISOString().slice(0,10)}.csv"`);
+        
+        // 한글 깨짐 방지를 위한 BOM 추가
+        res.status(200).end('\uFEFF' + csvString);
+
+    } catch (error) {
+        console.error("신청 현황 내보내기 에러:", error);
+        res.status(500).send('Export 중 서버 에러 발생');
+    }
+});
+
 // GET /api/admin/news - 모든 소식 목록 조회
 router.get('/news', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
     try {
