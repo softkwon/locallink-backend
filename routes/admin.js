@@ -1997,24 +1997,31 @@ router.post(
         // ★★★ 수정된 부분: 트랜잭션을 위해 client를 선언합니다. ★★★
         const client = await db.pool.connect();
         try {
+            // 트랜잭션 시작
             await client.query('BEGIN');
 
+            // S3에 이미지 업로드
             const logoUrl = await uploadImageToS3(req.file.buffer, req.file.originalname, 'partners', req.user.userId);
 
+            // 가장 마지막 순서 값을 찾아 +1
             const orderRes = await client.query('SELECT MAX(display_order) as max_order FROM partners');
             const newOrder = (orderRes.rows[0].max_order || 0) + 1;
 
+            // DB에 협력사 정보 저장
             const query = 'INSERT INTO partners (name, logo_url, link_url, display_order) VALUES ($1, $2, $3, $4) RETURNING id';
             await client.query(query, [name, logoUrl, link_url, newOrder]);
             
+            // 모든 작업이 성공하면 최종 반영
             await client.query('COMMIT'); 
             res.status(201).json({ success: true, message: '새로운 협력사가 추가되었습니다.' });
 
         } catch (error) { 
+            // 에러 발생 시 모든 작업을 되돌림
             await client.query('ROLLBACK');
             console.error("협력사 추가 에러:", error);
             res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' }); 
         } finally {
+            // 작업이 끝나면 DB 연결을 반환하여 자원 낭비 방지
             client.release();
         }
     }
