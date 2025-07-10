@@ -830,13 +830,13 @@ router.post(
         }));
         
         const query = `
-            INSERT INTO esg_programs (title, program_code, esg_category, program_overview, content, economic_effects, related_links, risk_text, risk_description, opportunity_effects, service_regions, status) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'published') RETURNING id;
+            INSERT INTO esg_programs (title, program_code, esg_category, program_overview, content, economic_effects, related_links, risk_text, risk_description, opportunity_effects, service_regions, status, execution_type) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id;
         `;
         const values = [
             otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
             JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
-            otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects, otherBodyFields.service_regions.split(',')
+            otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects, otherBodyFields.service_regions.split(','), otherBodyFields.execution_type
         ];
         
         await client.query(query, values);
@@ -915,8 +915,8 @@ router.put(
             UPDATE esg_programs SET 
                 title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, 
                 economic_effects = $6, related_links = $7, risk_text = $8, risk_description = $9, 
-                opportunity_effects = $10, service_regions = $11, updated_at = NOW()
-            WHERE id = $12;
+                opportunity_effects = $10, service_regions = $11, execution_type = $12, updated_at = NOW()
+            WHERE id = $13;
         `;
         
         // ★★★ 수정된 부분: 불필요한 JSON.parse()를 모두 제거합니다. ★★★
@@ -928,7 +928,8 @@ router.put(
             otherBodyFields.risk_text, 
             otherBodyFields.risk_description, 
             otherBodyFields.opportunity_effects,
-            otherBodyFields.service_regions.split(','), 
+            otherBodyFields.service_regions.split(','),
+            otherBodyFields.execution_type, 
             id
         ];
         
