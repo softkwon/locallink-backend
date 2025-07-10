@@ -52,6 +52,30 @@ app.use(cors({
     ],
     credentials: true
 }));
+
+// 허용할 도메인 목록을 명확하게 정의합니다.
+const allowedOrigins = [
+    'http://127.0.0.1:5500', 
+    'http://localhost:5500',
+    'https://locallink-frontend.vercel.app',
+    'https://esglink.co.kr',
+    'https://www.esglink.co.kr'
+];
+
+app.use(cors({
+    origin: function (origin, callback) {
+        // 요청의 출처(origin)가 없거나(Postman 등) 허용 목록에 있으면 허용
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('CORS에 의해 허용되지 않는 요청입니다.'));
+        }
+    },
+    credentials: true
+}));
+
+
+
 app.use(express.json());
 app.use(express.static('public'));
 
