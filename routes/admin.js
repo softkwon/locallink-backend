@@ -152,7 +152,7 @@ const uploadPartner = multer({ storage: partnerStorage, limits: { fileSize: 5 * 
 router.get(
     '/users',
     authMiddleware,
-    checkPermission(['super_admin', 'user_manager']),
+    checkPermission(['super_admin', 'vice_super_admin', 'user_manager']),
     async (req, res) => {
         try {
             // ★★★ 1. 사용자의 레벨 계산에 필요한 모든 데이터를 가져오는 쿼리로 수정 ★★★
@@ -255,7 +255,7 @@ router.delete(
 );
 
 // GET /api/admin/users/export - 모든 사용자 정보 CSV로 내보내기
-router.get('/users/export', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+router.get('/users/export', authMiddleware, checkPermission(['super_admin', 'vice_super_admin',  'user_manager']), async (req, res) => {
     try {
         // 내보낼 데이터에 맞게 컬럼을 선택하고, 한글 별칭을 부여합니다.
         const query = `
@@ -292,7 +292,7 @@ router.get('/users/export', authMiddleware, checkPermission(['super_admin', 'use
 
 // --- ▼▼▼ 문의 관리 API 추가 ▼▼▼ ---
 // GET /api/admin/inquiries - 모든 문의 조회
-router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+router.get('/inquiries', authMiddleware, checkPermission(['super_admin','vice_super_admin', 'user_manager']), async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM inquiries ORDER BY created_at DESC');
         res.status(200).json({ success: true, inquiries: rows });
@@ -305,7 +305,7 @@ router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'user_m
  * 수정 일시: 2025-07-07 00:18
  */
 // PUT /api/admin/inquiries/:id/status - 문의 상태 변경 (+답변 시 알림 추가)
-router.put('/inquiries/:id/status', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+router.put('/inquiries/:id/status', authMiddleware, checkPermission(['super_admin', 'vice_super_admin',  'user_manager']), async (req, res) => {
     const { id } = req.params;
     const { status } = req.body; // ★★★ reply 필드를 받지 않도록 수정 ★★★
 
@@ -356,7 +356,7 @@ router.delete('/inquiries/:id', authMiddleware, checkPermission(['super_admin'])
 // --- ▼▼▼ 문의 관리 API (탭 필터링, Export 기능 추가) ▼▼▼ ---
 // GET /api/admin/inquiries - 모든 문의 조회 (타입별 필터링 추가)
 // GET /api/admin/inquiries - 모든 문의 조회
-router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     const { type } = req.query; // 탭 필터링을 위한 타입
     try {
         let query = 'SELECT * FROM inquiries';
@@ -372,7 +372,7 @@ router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'user_m
 });
 
 // GET /api/admin/inquiries/export - 문의 내역 Export
-router.get('/inquiries/export', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+router.get('/inquiries/export', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM inquiries ORDER BY created_at DESC');
         const csvString = stringify(rows, { header: true });
@@ -464,7 +464,7 @@ router.put(
 router.get(
     '/scoring-rules',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin' ]),
     async (req, res) => {
         const { type } = req.query;
         try {
@@ -557,7 +557,7 @@ router.delete(
 router.post(
     '/questions',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']), // 권한을 content_manager도 포함하도록 수정
+    checkPermission(['super_admin', 'vice_super_admin']), // 권한을 content_manager도 포함하도록 수정
     async (req, res) => {
         // ★★★ 1. req.body에서 scoring_method를 명확하게 받아옵니다. ★★★
         const { 
@@ -779,7 +779,7 @@ router.get(
 router.put(
     '/benchmark-rules/:id',
     authMiddleware,
-    checkPermission(['super_admin', ]),
+    checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         const { id } = req.params;
         const { score, upper_bound, description } = req.body;
@@ -811,7 +811,7 @@ router.put(
 
 // --- ▼▼▼ ESG 추천 프로그램 관리 API (CRUD) 추가 ▼▼▼ ---
 // GET /api/admin/programs - 모든 프로그램 목록 조회
-router.get('/programs', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+router.get('/programs', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM esg_programs ORDER BY id ASC');
         
@@ -838,7 +838,7 @@ router.get('/programs', authMiddleware, checkPermission(['super_admin', 'content
 router.post(
     '/programs',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     upload.any(), // newImages 대신 any()를 사용
     async (req, res) => {
     
@@ -896,7 +896,7 @@ router.post(
 router.put(
     '/programs/:id',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin',  'content_manager']),
     upload.any(), // newImages 대신 any() 사용
     async (req, res) => {
     
@@ -1052,7 +1052,7 @@ router.delete(
  */
 
 // GET /api/admin/programs/:id - 특정 프로그램 정보 조회
-router.get('/programs/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+router.get('/programs/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin',  'content_manager']), async (req, res) => {
     const { id } = req.params;
     try {
         const { rows } = await db.query('SELECT * FROM esg_programs WHERE id = $1', [id]);
@@ -1113,7 +1113,7 @@ router.patch('/programs/:id/status', authMiddleware, checkPermission(['super_adm
 router.post(
     '/upload-program-images',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin',  'content_manager']),
     upload.array('programImages', 10), 
     async (req, res) => {
         if (!req.files || req.files.length === 0) {
@@ -1146,7 +1146,7 @@ router.post(
 router.post(
     '/benchmark-rules',
     authMiddleware,
-    checkPermission(['super_admin', '']),
+    checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         const { metric_name, description, upper_bound, score, is_inverted, comparison_type } = req.body;
         try {
@@ -1165,7 +1165,7 @@ router.post(
 router.delete(
     '/benchmark-rules/:id',
     authMiddleware,
-    checkPermission(['super_admin', '']),
+    checkPermission(['super_admin',]),
     async (req, res) => {
         const { id } = req.params;
         try {
@@ -1186,7 +1186,7 @@ router.delete(
 router.get(
     '/strategy-rules',
     authMiddleware,
-    checkPermission(['super_admin', '']),
+    checkPermission(['super_admin', 'vice_super_admin', ]),
     async (req, res) => {
         try {
             // 이제 esg_programs 테이블과 JOIN하여 추천 프로그램의 제목도 함께 가져옵니다.
@@ -1218,7 +1218,7 @@ router.get(
 router.post(
     '/strategy-rules',
     authMiddleware,
-    checkPermission(['super_admin', '']),
+    checkPermission(['super_admin', 'vice_super_admin', ]),
     async (req, res) => {
         const { description, conditions, recommended_program_code, priority } = req.body;
         try {
@@ -1238,7 +1238,7 @@ router.post(
 router.put(
     '/strategy-rules/:id',
     authMiddleware,
-    checkPermission(['super_admin', '']),
+    checkPermission(['super_admin', 'vice_super_admin', ]),
     async (req, res) => {
         const { id } = req.params;
         const { description, conditions, recommended_program_code, priority } = req.body;
@@ -1275,7 +1275,7 @@ router.delete(
 
 // --- ▼▼▼ 산업별 ESG 이슈 관리 API (CRUD) 추가 ▼▼▼ ---
 // GET /api/admin/industry-issues - 모든 산업 이슈 조회
-router.get('/industry-issues', authMiddleware, checkPermission(['super_admin', '']), async (req, res) => {
+router.get('/industry-issues', authMiddleware, checkPermission(['super_admin','vice_super_admin', ]), async (req, res) => {
     try {
         const query = `
             SELECT i.id, i.industry_code, ind.name as industry_name, i.key_issue, i.opportunity, i.threat, i.linked_metric, i.notes
@@ -1289,7 +1289,7 @@ router.get('/industry-issues', authMiddleware, checkPermission(['super_admin', '
 });
 
 // POST /api/admin/industry-issues
-router.post('/industry-issues', authMiddleware, checkPermission(['super_admin', '']), async (req, res) => {
+router.post('/industry-issues', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', ]), async (req, res) => {
     const { industry_code, key_issue, opportunity, threat, linked_metric, notes } = req.body;
     try {
         const query = 'INSERT INTO industry_esg_issues (industry_code, key_issue, opportunity, threat, linked_metric, notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id';
@@ -1303,7 +1303,7 @@ router.post('/industry-issues', authMiddleware, checkPermission(['super_admin', 
 });
 
 // PUT /api/admin/industry-issues/:id
-router.put('/industry-issues/:id', authMiddleware, checkPermission(['super_admin', '']), async (req, res) => {
+router.put('/industry-issues/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', ]), async (req, res) => {
     const { id } = req.params;
     const { key_issue, opportunity, threat, linked_metric, notes } = req.body;
     try {
@@ -1316,7 +1316,7 @@ router.put('/industry-issues/:id', authMiddleware, checkPermission(['super_admin
 });
 
 // DELETE /api/admin/industry-issues/:id
-router.delete('/industry-issues/:id', authMiddleware, checkPermission(['super_admin', '']), async (req, res) => {
+router.delete('/industry-issues/:id', authMiddleware, checkPermission(['super_admin', ]), async (req, res) => {
     const { id } = req.params;
     try {
         const { rowCount } = await db.query('DELETE FROM industry_esg_issues WHERE id = $1', [id]);
@@ -1329,7 +1329,7 @@ router.delete('/industry-issues/:id', authMiddleware, checkPermission(['super_ad
 router.get(
     '/industry-issues/export',
     authMiddleware,
-    checkPermission(['super_admin', '']),
+    checkPermission(['super_admin', 'vice_super_admin', ]),
     async (req, res) => {
         try {
             const { rows } = await db.query('SELECT id, industry_code, key_issue, opportunity, threat, linked_metric, notes FROM industry_esg_issues ORDER BY id ASC');
@@ -1355,7 +1355,7 @@ router.get(
 router.post(
     '/industry-issues/import',
     authMiddleware,
-    checkPermission(['super_admin', '']),
+    checkPermission(['super_admin', 'vice_super_admin', ]),
     upload.single('csvFile'), 
     async (req, res) => {
         if (!req.file) {
@@ -1422,7 +1422,7 @@ router.get('/company-size-issues', authMiddleware, async (req, res) => {
 });
 
 // PUT /company-size-issues - 모든 규모별 이슈 일괄 수정
-router.put('/company-size-issues', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+router.put('/company-size-issues', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { issues } = req.body;
     const client = await db.pool.connect();
     try {
@@ -1445,7 +1445,7 @@ router.put('/company-size-issues', authMiddleware, checkPermission(['super_admin
 });
 
 // GET /api/admin/regional-issues - 모든 지역 이슈 조회
-router.get('/regional-issues', authMiddleware, checkPermission(['super_admin', '']), async (req, res) => {
+router.get('/regional-issues', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     try {
         const query = 'SELECT * FROM regional_esg_issues ORDER BY display_order ASC';
         const { rows } = await db.query(query);
@@ -1454,7 +1454,7 @@ router.get('/regional-issues', authMiddleware, checkPermission(['super_admin', '
 });
 
 // POST /api/admin/regional-issues - 새 지역 이슈 추가
-router.post('/regional-issues', authMiddleware, checkPermission(['super_admin', '']), async (req, res) => {
+router.post('/regional-issues', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { region, esg_category, content } = req.body;
     try {
         const query = 'INSERT INTO regional_esg_issues (region, esg_category, content) VALUES ($1, $2, $3) RETURNING id';
@@ -1500,7 +1500,7 @@ router.delete(
 router.post(
     '/regional-issues/reorder',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     async (req, res) => {
         const { issueId, direction } = req.body;
         const client = await db.pool.connect();
@@ -1538,7 +1538,7 @@ router.post(
 router.get(
     '/statistics/all-diagnoses',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     async (req, res) => {
         const { year } = req.query;
         try {
@@ -1603,7 +1603,7 @@ router.get(
 router.get(
     '/statistics/available-years',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     async (req, res) => {
         try {
             const query = "SELECT DISTINCT EXTRACT(YEAR FROM created_at)::integer as year FROM diagnoses WHERE status = 'completed' ORDER BY year DESC";
@@ -1619,7 +1619,7 @@ router.get(
 router.get(
     '/statistics/all-diagnoses/export',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         try {
             // 1. 화면 표시용 API와 동일한, 모든 데이터를 가져오는 쿼리로 수정합니다.
@@ -1812,7 +1812,7 @@ router.post(
 router.get(
     '/benchmark-scores',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         try {
             // industry_benchmark_scores와 industries 테이블을 JOIN하여 산업명까지 함께 가져옵니다.
@@ -1843,7 +1843,7 @@ router.get(
 router.put(
     '/benchmark-scores/:id',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         const { id } = req.params;
         const { average_score, notes } = req.body; // 수정할 데이터
@@ -1867,7 +1867,7 @@ router.put(
 // --- ▼▼▼ 답변 추정 규칙 관리 API (CRUD) 추가 ▼▼▼ ---
 
 // GET /api/admin/answer-rules - 모든 답변 추정 규칙 조회
-router.get('/answer-rules', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+router.get('/answer-rules', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM average_to_answer_rules ORDER BY metric_name, lower_bound');
         res.status(200).json({ success: true, rules: rows });
@@ -1875,7 +1875,7 @@ router.get('/answer-rules', authMiddleware, checkPermission(['super_admin', 'con
 });
 
 // POST /api/admin/answer-rules - 새 답변 추정 규칙 추가
-router.post('/answer-rules', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+router.post('/answer-rules', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { metric_name, question_code, lower_bound, upper_bound, resulting_answer_value } = req.body;
     try {
         const query = 'INSERT INTO average_to_answer_rules (metric_name, question_code, lower_bound, upper_bound, resulting_answer_value) VALUES ($1, $2, $3, $4, $5)';
@@ -1885,7 +1885,7 @@ router.post('/answer-rules', authMiddleware, checkPermission(['super_admin', 'co
 });
 
 // PUT /api/admin/answer-rules/:id - 특정 답변 추정 규칙 수정
-router.put('/answer-rules/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+router.put('/answer-rules/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { id } = req.params;
     const { lower_bound, upper_bound, resulting_answer_value } = req.body;
     try {
@@ -1910,7 +1910,7 @@ router.delete('/answer-rules/:id', authMiddleware, checkPermission(['super_admin
 router.get(
     '/content/:key',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     async (req, res) => {
         const { key } = req.params;
         try {
@@ -1936,7 +1936,7 @@ router.get(
 router.put(
     '/content/:key',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         const { key } = req.params;
         const { content } = req.body;
@@ -1961,7 +1961,7 @@ router.put(
 router.post(
     '/upload-page-images',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin']),
     upload.array('pageImages', 10),
     async (req, res) => {
         if (!req.files || req.files.length === 0) {
@@ -2022,7 +2022,7 @@ router.get(
 router.post(
     '/partners',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin']),
     upload.single('partnerLogo'),
     async (req, res) => {
         const { name, link_url } = req.body;
@@ -2067,7 +2067,7 @@ router.post(
 router.put(
     '/partners/:id',
     authMiddleware,
-    checkPermission(['super_admin', 'content_manager']),
+    checkPermission(['super_admin', 'vice_super_admin']),
     upload.single('partnerLogo'), // 새 로고 파일이 있다면 'partnerLogo' 필드로 받습니다.
     async (req, res) => {
         const { id } = req.params;
@@ -2100,7 +2100,7 @@ router.put(
 );
 
 // POST /api/admin/partners/reorder - 파트너 순서 변경
-router.post('/partners/reorder', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+router.post('/partners/reorder', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { partnerId, direction } = req.body; // { partnerId: 5, direction: 'up' }
 
     const client = await db.pool.connect();
@@ -2142,7 +2142,7 @@ router.post('/partners/reorder', authMiddleware, checkPermission(['super_admin',
 router.delete(
     '/partners/:id',
     authMiddleware,
-    checkPermission(['super_admin', '']),
+    checkPermission(['super_admin']),
     async (req, res) => {
         const { id } = req.params;
         try {
@@ -2186,7 +2186,7 @@ router.get('/site-meta', authMiddleware, async (req, res) => {
 router.put(
     '/site-meta',
     authMiddleware,
-    checkPermission(['super_admin', '']),
+    checkPermission(['super_admin', 'vice_super_admin']),
     upload.single('metaImage'), // 'metaImage' 필드로 새 썸네일 이미지를 받습니다.
     async (req, res) => {
         const { title, description, existing_image_url } = req.body;
@@ -2293,7 +2293,7 @@ router.get('/industry-average-columns', authMiddleware, async (req, res) => {
 });
 
 // GET /api/admin/applications - 모든 프로그램 신청 현황 조회
-router.get('/applications', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+router.get('/applications', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     try {
         // 여러 테이블을 JOIN하여 필요한 모든 정보를 한 번에 가져옵니다.
         const query = `
@@ -2336,7 +2336,7 @@ router.get('/applications', authMiddleware, checkPermission(['super_admin', 'use
 });
 
 // GET /api/admin/applications/export - 프로그램 신청 현황 CSV로 내보내기
-router.get('/applications/export', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+router.get('/applications/export', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     try {
         const query = `
             SELECT 
@@ -2379,7 +2379,7 @@ router.get('/applications/export', authMiddleware, checkPermission(['super_admin
 });
 
 // GET /api/admin/news - 모든 소식 목록 조회
-router.get('/news', authMiddleware, checkPermission(['super_admin', 'content_manager']), async (req, res) => {
+router.get('/news', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
     try {
         // ★★★ SELECT 절에 is_pinned 컬럼을 추가합니다. ★★★
         const query = 'SELECT id, title, category, status, created_at, is_pinned FROM news_posts ORDER BY id DESC';
@@ -2431,7 +2431,7 @@ router.patch('/news/:id/pin', authMiddleware, checkPermission(['super_admin']), 
 });
 
 // POST /api/admin/news - 새 소식 저장 (FormData 방식)
-router.post('/news', authMiddleware, checkPermission(['super_admin', 'content_manager']), upload.any(), async (req, res) => {
+router.post('/news', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), upload.any(), async (req, res) => {
     const { title, category, status, content } = req.body;
     const { userId } = req.user; 
     
@@ -2471,7 +2471,7 @@ router.post('/news', authMiddleware, checkPermission(['super_admin', 'content_ma
  * 수정 위치: PUT /api/admin/news/:id
  * 수정 일시: 2025-07-04 02:15
  */
-router.put('/news/:id', authMiddleware, checkPermission(['super_admin', 'content_manager']), upload.any(), async (req, res) => {
+router.put('/news/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin',  'content_manager']), upload.any(), async (req, res) => {
     const { id } = req.params;
     const { title, category, status, content } = req.body;
     
@@ -2564,7 +2564,7 @@ router.patch('/news/:id/status', authMiddleware, checkPermission(['super_admin']
 });
 
 // DELETE /api/admin/news/:id - 게시물 삭제
-router.delete('/news/:id', authMiddleware, checkPermission(['super_admin', '']), async (req, res) => {
+router.delete('/news/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin' ]), async (req, res) => {
     const { id } = req.params;
     try {
         // 1. DB에서 삭제할 게시물의 이미지 URL들을 가져옵니다.
@@ -2598,7 +2598,7 @@ router.delete('/news/:id', authMiddleware, checkPermission(['super_admin', '']),
 });
 
 // POST /api/admin/upload-news-image - 뉴스 이미지 업로드
-router.post('/upload-news-image', authMiddleware, checkPermission(['super_admin', 'content_manager']), upload.array('newsImages', 3), async (req, res) => {
+router.post('/upload-news-image', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), upload.array('newsImages', 3), async (req, res) => {
     if (!req.files || req.files.length === 0) {
         return res.status(400).json({ success: false, message: '업로드된 파일이 없습니다.' });
     }
@@ -2745,7 +2745,7 @@ router.delete('/users/:id', authMiddleware, checkPermission(['super_admin']), as
 // --- ▼▼▼ 프로그램 신청 현황 관리 API 추가 ▼▼▼ ---
 
 // GET /api/admin/applications - 모든 프로그램 신청 현황 조회
-router.get('/applications', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+router.get('/applications', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     try {
         // 여러 테이블을 JOIN하여 필요한 모든 정보를 한 번에 가져옵니다.
         const query = `
@@ -2776,7 +2776,7 @@ router.get('/applications', authMiddleware, checkPermission(['super_admin', 'use
 });
 
 // PUT /api/admin/applications/:id/status - 프로그램 신청 상태 변경 및 알림 생성 API
-router.put('/applications/:id/status', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+router.put('/applications/:id/status', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
 
