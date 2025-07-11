@@ -254,6 +254,42 @@ router.delete(
     }
 );
 
+// GET /api/admin/users/export - 모든 사용자 정보 CSV로 내보내기
+router.get('/users/export', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
+    try {
+        // 내보낼 데이터에 맞게 컬럼을 선택하고, 한글 별칭을 부여합니다.
+        const query = `
+            SELECT 
+                id as "ID",
+                email as "이메일",
+                company_name as "회사명",
+                manager_name as "담당자명",
+                manager_phone as "연락처",
+                role as "권한",
+                TO_CHAR(created_at, 'YYYY-MM-DD') as "가입일"
+            FROM users 
+            ORDER BY id DESC
+        `;
+        const { rows } = await db.query(query);
+
+        if (rows.length === 0) {
+            return res.status(404).send('내보낼 사용자 데이터가 없습니다.');
+        }
+
+        const csvString = stringify(rows, { header: true });
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="users-list-${new Date().toISOString().slice(0,10)}.csv"`);
+        
+        // 엑셀에서 한글이 깨지지 않도록 BOM 추가
+        res.status(200).end('\uFEFF' + csvString);
+
+    } catch (error) {
+        console.error("사용자 목록 내보내기 에러:", error);
+        res.status(500).send('Export 중 서버 에러 발생');
+    }
+});
+
 // --- ▼▼▼ 문의 관리 API 추가 ▼▼▼ ---
 // GET /api/admin/inquiries - 모든 문의 조회
 router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'user_manager']), async (req, res) => {
