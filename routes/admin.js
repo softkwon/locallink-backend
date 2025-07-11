@@ -203,15 +203,26 @@ router.get(
 router.put(
     '/users/:userId/role',
     authMiddleware,
-    checkPermission(['super_admin']), // 오직 최고 관리자만 역할을 변경 가능
+    checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         const { userId } = req.params;
         const { role } = req.body;
 
-        // 허용된 역할 목록
-        const allowedRoles = ['user', 'content_manager', 'user_manager', 'super_admin'];
+        // ★★★ 여기에 'vice_super_admin'을 추가합니다. ★★★
+        const allowedRoles = ['user', 'content_manager', 'user_manager', 'vice_super_admin', 'super_admin'];
         if (!role || !allowedRoles.includes(role)) {
             return res.status(400).json({ success: false, message: '유효하지 않은 역할입니다.' });
+        }
+        
+        // 부관리자가 super_admin을 건드리지 못하게 하는 방어 로직
+        if (req.user.role === 'vice_super_admin') {
+            if (role === 'super_admin') {
+                return res.status(403).json({ success: false, message: 'super_admin으로 역할을 지정할 수 없습니다.' });
+            }
+            const { rows } = await db.query('SELECT role FROM users WHERE id = $1', [userId]);
+            if (rows.length > 0 && rows[0].role === 'super_admin') {
+                return res.status(403).json({ success: false, message: 'super_admin의 역할은 변경할 수 없습니다.' });
+            }
         }
 
         try {
