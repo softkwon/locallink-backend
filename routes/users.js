@@ -299,77 +299,84 @@ router.get('/me/diagnosis-status', authMiddleware, async (req, res) => {
 
 /**
  * @api {get} /api/users/me/dashboard
- * @description [신규] 로그인된 사용자의 대시보드 정보를 조회하는 API
- * @details 실시간 점수, 진행 중인 프로그램의 타임라인 등을 계산하여 반환합니다.
+ * @description [수정] 로그인된 사용자의 대시보드 정보를 조회하는 API (오류 수정 및 기능 추가)
  */
 router.get('/me/dashboard', authMiddleware, async (req, res) => {
     const { userId } = req.user;
     const client = await db.pool.connect();
 
     try {
-        // 1. 사용자의 가장 최근 '완료된' 진단 정보를 가져옵니다. (최초 점수의 기준)
-        const diagnosisRes = await client.query(
-            `SELECT id, total_score FROM diagnoses
-             WHERE user_id = $1 AND status = 'completed'
-             ORDER BY created_at DESC LIMIT 1`,
-            [userId]
-        );
+        // Promise.all을 사용해 여러 데이터를 동시에 조회합니다.
+        const [
+            diagnosisRes,
+            improvementScoreRes,
+            applicationsRes,
+            legacyApplicationsRes // 기존 신청 목록을 위한 데이터 조회 추가
+        ] = await Promise.all([
+            // 1. 가장 최근 '완료된' 진단 정보
+            client.query(
+                `SELECT id, total_score FROM diagnoses
+                 WHERE user_id = $1 AND status = 'completed'
+                 ORDER BY created_at DESC LIMIT 1`,
+                [userId]
+            ),
+            // 2. 완료한 모든 마일스톤의 추가 점수 합계
+            client.query(
+                `SELECT COALESCE(SUM(pm.score_value), 0) AS total_improvement
+                 FROM user_milestone_completions ucm
+                 JOIN program_milestones pm ON ucm.milestone_id = pm.id
+                 WHERE ucm.user_id = $1`,
+                [userId]
+            ),
+            // 3. 맞춤형 타임라인을 위한 프로그램 진행 현황 (★★★ JOIN을 LEFT JOIN으로 수정하여 오류 해결 ★★★)
+            client.query(
+                `SELECT
+                    ua.id AS application_id, ua.admin_message, p.title AS program_title,
+                    json_agg(
+                        json_build_object(
+                            'milestoneName', pm.milestone_name, 'displayOrder', pm.display_order,
+                            'isCompleted', CASE WHEN ucm.id IS NOT NULL THEN true ELSE false END,
+                            'completedAt', ucm.completed_at
+                        ) ORDER BY pm.display_order
+                    ) FILTER (WHERE pm.id IS NOT NULL) AS timeline
+                 FROM user_applications ua
+                 JOIN esg_programs p ON ua.program_id = p.id
+                 LEFT JOIN program_milestones pm ON p.id = pm.program_id
+                 LEFT JOIN user_milestone_completions ucm ON pm.id = ucm.milestone_id AND ua.id = ucm.application_id
+                 WHERE ua.user_id = $1 AND ua.status IN ('assigned', '진행', '완료')
+                 GROUP BY ua.id, p.title
+                 ORDER BY ua.created_at DESC`,
+                [userId]
+            ),
+            // 4. 기존 대시보드 기능을 위한 '단순 신청 목록'
+            client.query(
+                `SELECT ua.id, ua.status, ua.created_at, p.title as program_title
+                 FROM user_applications ua
+                 JOIN esg_programs p ON ua.program_id = p.id
+                 WHERE ua.user_id = $1
+                 ORDER BY ua.created_at DESC`,
+                [userId]
+            )
+        ]);
 
-        let initialScore = 0;
-        if (diagnosisRes.rows.length > 0) {
-            initialScore = parseFloat(diagnosisRes.rows[0].total_score);
-        }
-
-        // 2. 사용자가 완료한 모든 마일스톤의 추가 점수 합계를 계산합니다.
-        const improvementScoreRes = await client.query(
-            `SELECT COALESCE(SUM(pm.score_value), 0) AS total_improvement
-             FROM user_milestone_completions ucm
-             JOIN program_milestones pm ON ucm.milestone_id = pm.id
-             WHERE ucm.user_id = $1`,
-            [userId]
-        );
+        const initialScore = diagnosisRes.rows.length > 0 ? parseFloat(diagnosisRes.rows[0].total_score) : 0;
         const improvementScore = parseInt(improvementScoreRes.rows[0].total_improvement, 10);
-
-        // 3. 실시간 ESG 점수를 계산합니다.
         const realtimeScore = initialScore + improvementScore;
-
-        // 4. 사용자가 신청/할당받은 프로그램 및 마일스톤 진행 현황을 가져옵니다.
-        const applicationsRes = await client.query(
-            `SELECT
-                ua.id AS application_id,
-                ua.admin_message,
-                p.title AS program_title,
-                json_agg(
-                    json_build_object(
-                        'milestoneName', pm.milestone_name,
-                        'displayOrder', pm.display_order,
-                        'isCompleted', CASE WHEN ucm.id IS NOT NULL THEN true ELSE false END,
-                        'completedAt', ucm.completed_at
-                    ) ORDER BY pm.display_order
-                ) AS timeline
-             FROM user_applications ua
-             JOIN esg_programs p ON ua.program_id = p.id
-             JOIN program_milestones pm ON p.id = pm.program_id
-             LEFT JOIN user_milestone_completions ucm ON pm.id = ucm.milestone_id AND ua.id = ucm.application_id
-             WHERE ua.user_id = $1
-             GROUP BY ua.id, p.title
-             ORDER BY ua.created_at DESC`,
-            [userId]
-        );
-
+        
         res.status(200).json({
             success: true,
             dashboard: {
                 initialScore,
                 improvementScore,
                 realtimeScore,
-                activePrograms: applicationsRes.rows,
+                customizedPrograms: applicationsRes.rows, // 맞춤형 타임라인이 있는 프로그램
+                allApplications: legacyApplicationsRes.rows // 기존과 동일한 단순 신청 목록
             }
         });
 
     } catch (error) {
         console.error('대시보드 데이터 조회 에러:', error);
-        res.status(500).json({ success: false, message: '대시보드 정보를 가져오는 중 오류가 발생했습니다.' });
+        res.status(500).json({ success: false, message: '대시보드 정보를 가져오는 중 서버 오류가 발생했습니다.' });
     } finally {
         client.release();
     }
