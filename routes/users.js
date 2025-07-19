@@ -293,13 +293,9 @@ router.get('/me/diagnosis-status', authMiddleware, async (req, res) => {
     }
 });
 
-// =================================================================
-// ▼▼▼ 사용자 대시보드 API (신규 추가) ▼▼▼
-// =================================================================
-
 /**
  * @api {get} /api/users/me/dashboard
- * @description [수정] 로그인된 사용자의 대시보드 정보를 조회하는 API (오류 수정 및 기능 추가)
+ * @description [V3 수정] 로그인된 사용자의 대시보드 정보를 조회합니다. (500 오류 해결)
  */
 router.get('/me/dashboard', authMiddleware, async (req, res) => {
     const { userId } = req.user;
@@ -324,16 +320,18 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                 [userId]
             ),
 
-            // 3. "새로운 DB 구조"에서 맞춤형 프로그램과 타임라인 조회
+            // 3. 맞춤형 프로그램과 타임라인 조회 (★★★ GROUP BY 절 수정으로 오류 해결 ★★★)
             client.query(
                 `SELECT
-                    ua.id AS application_id, ua.admin_message, p.title AS program_title,
+                    ua.id AS application_id,
+                    ua.admin_message,
+                    p.title AS program_title,
                     json_agg(
                         json_build_object(
                             'milestoneName', am.milestone_name,
                             'content', am.content,
                             'attachmentUrl', am.attachment_url,
-                            'isCompleted', am.is_completed
+                            'isCompleted', am.is_completed,
                             'scoreValue', am.score_value
                         ) ORDER BY am.display_order
                     ) FILTER (WHERE am.id IS NOT NULL) AS timeline
@@ -341,12 +339,12 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                  JOIN esg_programs p ON ua.program_id = p.id
                  LEFT JOIN application_milestones am ON ua.id = am.application_id
                  WHERE ua.user_id = $1
-                 GROUP BY ua.id, p.title
+                 GROUP BY ua.id, p.title, ua.admin_message -- admin_message를 GROUP BY에 추가
                  ORDER BY ua.created_at DESC`,
                 [userId]
             ),
 
-            // 4. 기존 기능 유지를 위한 전체 신청 목록 조회
+            // 4. 전체 신청 목록 조회
             client.query(
                 `SELECT ua.id, ua.status, ua.created_at, p.title as program_title
                  FROM user_applications ua JOIN esg_programs p ON ua.program_id = p.id
@@ -377,5 +375,6 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         client.release();
     }
 });
+
 
 module.exports = router;
