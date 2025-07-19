@@ -302,64 +302,75 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
     const client = await db.pool.connect();
 
     try {
-        const [
-            diagnosisRes,
-            improvementScoreRes,
-            programsRes // ★★★ API 호출을 하나로 통합 ★★★
-        ] = await Promise.all([
-            // 1. 최초 진단 점수 조회
-            client.query(`SELECT id, total_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
-            
-            // 2. "완료된" 마일스톤의 개선 점수 합계 조회
+        // --- 1. 진단, 답변, 질문 유형 등 계산에 필요한 모든 데이터를 한 번에 가져옵니다. ---
+        const [diagRes, questionsRes, programsRes] = await Promise.all([
+            client.query(`SELECT id, total_score, e_score, s_score, g_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
+            client.query(`SELECT question_code, esg_category FROM survey_questions`),
             client.query(
-                `SELECT COALESCE(SUM(am.score_value), 0) AS total_improvement
-                 FROM application_milestones am
-                 JOIN user_applications ua ON am.application_id = ua.id
-                 WHERE ua.user_id = $1 AND am.is_completed = true`,
-                [userId]
-            ),
-
-            // 3. ★★★ 사용자가 신청한 모든 프로그램의 상태(status)와 상세 마일스톤을 한 번에 조회 ★★★
-            client.query(
-                `SELECT
-                    ua.id AS application_id,
-                    ua.status, -- 진행 상태 (신청, 접수, 진행, 완료)
-                    ua.admin_message,
-                    p.title AS program_title,
-                    COALESCE(
-                        json_agg(
-                            json_build_object(
-                                'milestoneName', am.milestone_name,
-                                'content', am.content,
-                                'attachmentUrl', am.attachment_url,
-                                'isCompleted', am.is_completed,
-                                'scoreValue', am.score_value
-                            ) ORDER BY am.display_order
-                        ) FILTER (WHERE am.id IS NOT NULL),
-                        '[]'::json
-                    ) AS timeline
+                `SELECT ua.id AS application_id, ua.status, p.title AS program_title,
+                 COALESCE(json_agg(am.* ORDER BY am.display_order) FILTER (WHERE am.id IS NOT NULL), '[]'::json) AS timeline
                  FROM user_applications ua
                  JOIN esg_programs p ON ua.program_id = p.id
                  LEFT JOIN application_milestones am ON ua.id = am.application_id
                  WHERE ua.user_id = $1
-                 GROUP BY ua.id, p.title, ua.admin_message, ua.status
+                 GROUP BY ua.id, p.title, ua.status
                  ORDER BY ua.created_at DESC`,
                 [userId]
             )
         ]);
 
-        const initialScore = diagnosisRes.rows.length > 0 ? parseFloat(diagnosisRes.rows[0].total_score) : 0;
-        const improvementScore = parseInt(improvementScoreRes.rows[0].total_improvement, 10);
-        const realtimeScore = initialScore + improvementScore;
+        if (diagRes.rows.length === 0) {
+            return res.status(404).json({ success: false, message: '완료된 진단이 없어 대시보드를 표시할 수 없습니다.' });
+        }
+
+        const diagnosis = diagRes.rows[0];
+        const questionsMap = new Map(questionsRes.rows.map(q => [q.question_code, q.esg_category]));
+        const userAnswersRes = await client.query('SELECT question_code, score FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosis.id]);
+        const userAnswersMap = new Map(userAnswersRes.rows.map(a => [a.question_code, parseFloat(a.score)]));
+
+        // --- 2. 점수 계산 로직 ---
+        const initialScores = {
+            total: parseFloat(diagnosis.total_score),
+            e: parseFloat(diagnosis.e_score),
+            s: parseFloat(diagnosis.s_score),
+            g: parseFloat(diagnosis.g_score)
+        };
+        const improvementScores = { total: 0, e: 0, s: 0, g: 0 };
+
+        programsRes.rows.forEach(program => {
+            program.potentialImprovement = { total: 0, e: 0, s: 0, g: 0 }; // 프로그램별 개선 점수 초기화
+            program.timeline.forEach(milestone => {
+                if (milestone.linked_question_codes && Array.isArray(milestone.linked_question_codes)) {
+                    milestone.linked_question_codes.forEach(code => {
+                        const initialScore = userAnswersMap.get(code) || 0;
+                        const targetScore = milestone.score_value || 0;
+                        const improvement = targetScore - initialScore;
+                        const category = (questionsMap.get(code) || '').toLowerCase();
+
+                        if (improvement > 0 && category) {
+                            if (milestone.is_completed) {
+                                improvementScores[category] += improvement;
+                            } else {
+                                program.potentialImprovement[category] += improvement;
+                                program.potentialImprovement.total += improvement;
+                            }
+                        }
+                    });
+                }
+            });
+            improvementScores.total = improvementScores.e + improvementScores.s + improvementScores.g;
+        });
+
+        const realtimeScores = {
+            total: initialScores.total + improvementScores.total,
+            e: initialScores.e + improvementScores.e,
+            s: initialScores.s + improvementScores.s,
+            g: initialScores.g + improvementScores.g
+        };
         
         res.status(200).json({
             success: true,
-            dashboard: {
-                initialScore,
-                improvementScore,
-                realtimeScore,
-                programs: programsRes.rows // ★★★ customizedPrograms -> programs로 이름 변경
-            }
+            dashboard: { initialScores, improvementScores, realtimeScores, programs: programsRes.rows }
         });
 
     } catch (error) {
