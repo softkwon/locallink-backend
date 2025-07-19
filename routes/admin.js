@@ -2956,4 +2956,107 @@ router.post(
     }
 );
 
+// =================================================================
+// ▼▼▼ 프로그램별 마일스톤 관리 API (신규 추가) ▼▼▼ / ver1.1 250719
+// =================================================================
+
+/**
+ * @api {get} /api/admin/programs/:programId/milestones
+ * @description 특정 프로그램에 설정된 모든 마일스톤 목록을 조회합니다.
+ */
+router.get(
+    '/programs/:programId/milestones',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        const { programId } = req.params;
+        try {
+            const { rows } = await db.query(
+                'SELECT * FROM program_milestones WHERE program_id = $1 ORDER BY display_order ASC',
+                [programId]
+            );
+            res.status(200).json({ success: true, milestones: rows });
+        } catch (error) {
+            console.error('마일스톤 조회 에러:', error);
+            res.status(500).json({ success: false, message: '서버 에러' });
+        }
+    }
+);
+
+/**
+ * @api {post} /api/admin/programs/:programId/milestones
+ * @description 특정 프로그램에 새로운 마일스톤을 추가합니다.
+ * @body { milestone_name: string, score_value: number, display_order: number }
+ */
+router.post(
+    '/programs/:programId/milestones',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        const { programId } = req.params;
+        const { milestone_name, score_value, display_order } = req.body;
+        try {
+            const query = `
+                INSERT INTO program_milestones (program_id, milestone_name, score_value, display_order)
+                VALUES ($1, $2, $3, $4) RETURNING *`;
+            const { rows } = await db.query(query, [programId, milestone_name, score_value, display_order]);
+            res.status(201).json({ success: true, message: '마일스톤이 추가되었습니다.', milestone: rows[0] });
+        } catch (error) {
+            console.error('마일스톤 추가 에러:', error);
+            res.status(500).json({ success: false, message: '서버 에러' });
+        }
+    }
+);
+
+/**
+ * @api {put} /api/admin/milestones/:milestoneId
+ * @description 특정 마일스톤의 내용을 수정합니다.
+ */
+router.put(
+    '/milestones/:milestoneId',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        const { milestoneId } = req.params;
+        const { milestone_name, score_value, display_order } = req.body;
+        try {
+            const query = `
+                UPDATE program_milestones
+                SET milestone_name = $1, score_value = $2, display_order = $3
+                WHERE id = $4 RETURNING *`;
+            const { rows } = await db.query(query, [milestone_name, score_value, display_order, milestoneId]);
+            if (rows.length === 0) {
+                 return res.status(404).json({ success: false, message: '마일스톤을 찾을 수 없습니다.' });
+            }
+            res.status(200).json({ success: true, message: '마일스톤이 수정되었습니다.', milestone: rows[0] });
+        } catch (error) {
+            console.error('마일스톤 수정 에러:', error);
+            res.status(500).json({ success: false, message: '서버 에러' });
+        }
+    }
+);
+
+/**
+ * @api {delete} /api/admin/milestones/:milestoneId
+ * @description 특정 마일스톤을 삭제합니다.
+ */
+router.delete(
+    '/milestones/:milestoneId',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        const { milestoneId } = req.params;
+        try {
+            const { rowCount } = await db.query('DELETE FROM program_milestones WHERE id = $1', [milestoneId]);
+            if (rowCount === 0) {
+                return res.status(404).json({ success: false, message: '마일스톤을 찾을 수 없습니다.' });
+            }
+            res.status(200).json({ success: true, message: '마일스톤이 삭제되었습니다.' });
+        } catch (error) {
+            console.error('마일스톤 삭제 에러:', error);
+            res.status(500).json({ success: false, message: '서버 에러' });
+        }
+    }
+);
+
 module.exports = router;
