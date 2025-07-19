@@ -306,55 +306,50 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
     const client = await db.pool.connect();
 
     try {
-        // Promise.all을 사용해 여러 데이터를 동시에 조회합니다.
         const [
             diagnosisRes,
             improvementScoreRes,
-            applicationsRes,
-            legacyApplicationsRes // 기존 신청 목록을 위한 데이터 조회 추가
+            customizedProgramsRes,
+            allApplicationsRes
         ] = await Promise.all([
-            // 1. 가장 최근 '완료된' 진단 정보
+            // 1. 최초 진단 점수 조회
+            client.query(`SELECT id, total_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
+            
+            // 2. "완료된" 마일스톤의 개선 점수 합계 조회
             client.query(
-                `SELECT id, total_score FROM diagnoses
-                 WHERE user_id = $1 AND status = 'completed'
-                 ORDER BY created_at DESC LIMIT 1`,
+                `SELECT COALESCE(SUM(am.score_value), 0) AS total_improvement
+                 FROM application_milestones am
+                 JOIN user_applications ua ON am.application_id = ua.id
+                 WHERE ua.user_id = $1 AND am.is_completed = true`,
                 [userId]
             ),
-            // 2. 완료한 모든 마일스톤의 추가 점수 합계
-            client.query(
-                `SELECT COALESCE(SUM(pm.score_value), 0) AS total_improvement
-                 FROM user_milestone_completions ucm
-                 JOIN program_milestones pm ON ucm.milestone_id = pm.id
-                 WHERE ucm.user_id = $1`,
-                [userId]
-            ),
-            // 3. 맞춤형 타임라인을 위한 프로그램 진행 현황 (★★★ JOIN을 LEFT JOIN으로 수정하여 오류 해결 ★★★)
+
+            // 3. "새로운 DB 구조"에서 맞춤형 프로그램과 타임라인 조회
             client.query(
                 `SELECT
                     ua.id AS application_id, ua.admin_message, p.title AS program_title,
                     json_agg(
                         json_build_object(
-                            'milestoneName', pm.milestone_name, 'displayOrder', pm.display_order,
-                            'isCompleted', CASE WHEN ucm.id IS NOT NULL THEN true ELSE false END,
-                            'completedAt', ucm.completed_at
-                        ) ORDER BY pm.display_order
-                    ) FILTER (WHERE pm.id IS NOT NULL) AS timeline
+                            'milestoneName', am.milestone_name,
+                            'content', am.content,
+                            'attachmentUrl', am.attachment_url,
+                            'isCompleted', am.is_completed
+                        ) ORDER BY am.display_order
+                    ) FILTER (WHERE am.id IS NOT NULL) AS timeline
                  FROM user_applications ua
                  JOIN esg_programs p ON ua.program_id = p.id
-                 LEFT JOIN program_milestones pm ON p.id = pm.program_id
-                 LEFT JOIN user_milestone_completions ucm ON pm.id = ucm.milestone_id AND ua.id = ucm.application_id
-                 WHERE ua.user_id = $1 AND ua.status IN ('assigned', '진행', '완료')
+                 LEFT JOIN application_milestones am ON ua.id = am.application_id
+                 WHERE ua.user_id = $1
                  GROUP BY ua.id, p.title
                  ORDER BY ua.created_at DESC`,
                 [userId]
             ),
-            // 4. 기존 대시보드 기능을 위한 '단순 신청 목록'
+
+            // 4. 기존 기능 유지를 위한 전체 신청 목록 조회
             client.query(
                 `SELECT ua.id, ua.status, ua.created_at, p.title as program_title
-                 FROM user_applications ua
-                 JOIN esg_programs p ON ua.program_id = p.id
-                 WHERE ua.user_id = $1
-                 ORDER BY ua.created_at DESC`,
+                 FROM user_applications ua JOIN esg_programs p ON ua.program_id = p.id
+                 WHERE ua.user_id = $1 ORDER BY ua.created_at DESC`,
                 [userId]
             )
         ]);
@@ -369,8 +364,8 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                 initialScore,
                 improvementScore,
                 realtimeScore,
-                customizedPrograms: applicationsRes.rows, // 맞춤형 타임라인이 있는 프로그램
-                allApplications: legacyApplicationsRes.rows // 기존과 동일한 단순 신청 목록
+                customizedPrograms: customizedProgramsRes.rows,
+                allApplications: allApplicationsRes.rows
             }
         });
 
