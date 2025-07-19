@@ -149,11 +149,9 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
 
 // POST /api/diagnoses/:id/answers - 설문 답변 저장 및 채점 (최종 수정본)
-// POST /api/diagnoses/:id/answers - 설문 답변 저장 및 채점
-// POST /api/diagnoses/:id/answers - 설문 답변 저장 및 채점
 router.post('/:id/answers', authMiddleware, async (req, res) => {
     const { id: diagnosisId } = req.params;
-    const userId = req.user.userId;
+    const { userId } = req.user;
     const answers = req.body;
     const client = await db.pool.connect();
     try {
@@ -175,9 +173,8 @@ router.post('/:id/answers', authMiddleware, async (req, res) => {
         await client.query('DELETE FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosisId]);
         
         const answerInsertPromises = [];
-        const rawScores = { E: 0, S: 0, G: 0 };
-
-        // --- ▼▼▼ 완전히 새로워진 채점 로직 ▼▼▼ ---
+        
+        // --- ▼▼▼ 기존 채점 로직 (유지) ▼▼▼ ---
         for (const questionCode in answers) {
             if (answers[questionCode]) {
                 const userAnswer = answers[questionCode];
@@ -185,8 +182,6 @@ router.post('/:id/answers', authMiddleware, async (req, res) => {
                 if (!question) continue;
 
                 let score = 0;
-                // 1. 해당 질문/답변에 대한 규칙을 scoring_rules에서 찾습니다.
-                // 비교 채점 문항은 answer_condition이 '*'인 규칙을 찾습니다.
                 let rule = scoringRules.find(r => r.question_code === questionCode && r.answer_condition === userAnswer);
                 if (!rule) {
                     rule = scoringRules.find(r => r.question_code === questionCode && r.answer_condition === '*');
@@ -194,9 +189,7 @@ router.post('/:id/answers', authMiddleware, async (req, res) => {
 
                 if (rule) {
                     const score_rule = rule.score;
-                    // 2. 규칙의 score 값에 따라 분기합니다.
                     if (score_rule === 'BENCHMARK_GHG' || score_rule === 'BENCHMARK_ENERGY' || score_rule === 'BENCHMARK_WASTE') {
-                        // 2-1. '명령어'일 경우: 벤치마크 비교 채점 수행
                         const metricName = industryAverages ? Object.keys(industryAverages).find(key => key.startsWith(score_rule.split('_')[1].toLowerCase())) : null;
                         if (metricName && industryAverages) {
                             const avg = parseFloat(industryAverages[metricName]);
@@ -213,39 +206,55 @@ router.post('/:id/answers', authMiddleware, async (req, res) => {
                             }
                         }
                     } else {
-                        // 2-2. '숫자'일 경우: 해당 점수를 직접 사용
                         score = parseFloat(score_rule);
                     }
                 }
-                
-                if (question.esg_category && !isNaN(score)) rawScores[question.esg_category] += score;
                 
                 const query = 'INSERT INTO diagnosis_answers (diagnosis_id, question_code, answer_value, score) VALUES ($1, $2, $3, $4)';
                 answerInsertPromises.push(client.query(query, [diagnosisId, questionCode, userAnswer, score]));
             }
         }
         await Promise.all(answerInsertPromises);
-        // --- ▲▲▲ 채점 로직 끝 ▲▲▲ ---
+        // --- ▲▲▲ 기존 채점 로직 끝 ▲▲▲ ---
         
-        const maxScores = { E: 0, S: 0, G: 0 };
-        const simpleQuestions = allQuestions.filter(q => q.diagnosis_type === 'simple');
+        // --- ▼▼▼ 점수 집계 및 저장 로직 (신규 추가) ▼▼▼ ---
+        const questionsMap = new Map(allQuestions.map(q => [q.question_code, q.esg_category]));
+        const answersRes = await client.query('SELECT question_code, score FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosisId]);
 
-        simpleQuestions.forEach(q => {
-            if (!q.question_code.includes('_')) {
-                if(q.esg_category === 'E') maxScores.E += 100;
-                else if(q.esg_category === 'S') maxScores.S += 100;
-                else if(q.esg_category === 'G') maxScores.G += 100;
+        const totalScores = { e: 0, s: 0, g: 0 };
+        const questionCounts = { e: 0, s: 0, g: 0 };
+
+        answersRes.rows.forEach(answer => {
+            const category = (questionsMap.get(answer.question_code) || '').toLowerCase();
+            const score = parseFloat(answer.score) || 0;
+            if (totalScores[category] !== undefined) {
+                totalScores[category] += score;
+                questionCounts[category]++;
             }
         });
-        const eScore = maxScores.E > 0 ? (rawScores.E / maxScores.E) * 100 : 0;
-        const sScore = maxScores.S > 0 ? (rawScores.S / maxScores.S) * 100 : 0;
-        const gScore = maxScores.G > 0 ? (rawScores.G / maxScores.G) * 100 : 0;
-        const totalScore = (eScore + sScore + gScore) / 3;
 
-        await client.query(
-            'UPDATE diagnoses SET status = $1, total_score = $2, e_score = $3, s_score = $4, g_score = $5, updated_at = NOW() WHERE id = $6',
-            ['completed', totalScore.toFixed(2), eScore.toFixed(2), sScore.toFixed(2), gScore.toFixed(2), diagnosisId]
-        );
+        const averageScores = {
+            e: questionCounts.e > 0 ? totalScores.e / questionCounts.e : 0,
+            s: questionCounts.s > 0 ? totalScores.s / questionCounts.s : 0,
+            g: questionCounts.g > 0 ? totalScores.g / questionCounts.g : 0,
+        };
+        averageScores.total = (averageScores.e + averageScores.s + averageScores.g) / 3;
+
+        const updateQuery = `
+            UPDATE diagnoses SET
+                status = 'completed',
+                total_score = $1,
+                e_score = $2, s_score = $3, g_score = $4,
+                e_total_score = $5, s_total_score = $6, g_total_score = $7,
+                updated_at = NOW()
+            WHERE id = $8
+        `;
+        await client.query(updateQuery, [
+            averageScores.total.toFixed(2),
+            averageScores.e.toFixed(2), averageScores.s.toFixed(2), averageScores.g.toFixed(2),
+            totalScores.e.toFixed(2), totalScores.s.toFixed(2), totalScores.g.toFixed(2),
+            diagnosisId
+        ]);
         
         await client.query('COMMIT');
         res.status(200).json({ success: true, message: '설문이 성공적으로 제출되었으며, 채점이 완료되었습니다.', diagnosisId: diagnosisId });
