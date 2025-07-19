@@ -302,16 +302,17 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
     const client = await db.pool.connect();
 
     try {
-        const [diagRes, programsRes] = await Promise.all([
+        const [diagRes, questionsRes, programsRes] = await Promise.all([
             client.query(`SELECT id, total_score, e_score, s_score, g_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
+            client.query(`SELECT question_code, esg_category FROM survey_questions`),
             client.query(
-                `SELECT ua.id AS application_id, ua.status, p.title AS program_title,
+                `SELECT ua.id AS application_id, ua.status, p.title AS program_title, p.esg_category,
                  COALESCE(json_agg(am.* ORDER BY am.display_order) FILTER (WHERE am.id IS NOT NULL), '[]'::json) AS timeline
                  FROM user_applications ua
                  JOIN esg_programs p ON ua.program_id = p.id
                  LEFT JOIN application_milestones am ON ua.id = am.application_id
                  WHERE ua.user_id = $1
-                 GROUP BY ua.id, p.title, ua.status
+                 GROUP BY ua.id, p.title, p.esg_category, ua.status
                  ORDER BY ua.created_at DESC`,
                 [userId]
             )
@@ -322,8 +323,10 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         }
 
         const diagnosis = diagRes.rows[0];
+        const questionsMap = new Map(questionsRes.rows.map(q => [q.question_code, q.esg_category]));
+        const userAnswersRes = await client.query('SELECT question_code, score FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosis.id]);
+        const userAnswersMap = new Map(userAnswersRes.rows.map(a => [a.question_code, parseFloat(a.score)]));
 
-        // --- 2. 새로운 점수 계산 로직 ---
         const initialScores = {
             e: parseFloat(diagnosis.e_score) || 0,
             s: parseFloat(diagnosis.s_score) || 0,
@@ -338,7 +341,6 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
             program.timeline.forEach(milestone => {
                 const improvement = milestone.score_value || 0;
                 const category = (milestone.improvement_category || '').toLowerCase();
-
                 if (improvement > 0 && ['e', 's', 'g'].includes(category)) {
                     if (milestone.is_completed) {
                         improvementScores[category] += improvement;
@@ -349,7 +351,9 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
             });
             program.potentialImprovement.total = program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g;
         });
-        improvementScores.total = improvementScores.e + improvementScores.s + improvementScores.g;
+        
+        // ★★★ [핵심 수정] 개선 총점은 E, S, G 개선 점수의 "평균"으로 계산 ★★★
+        improvementScores.total = (improvementScores.e + improvementScores.s + improvementScores.g) / 3;
 
         const realtimeScores = {
             e: initialScores.e + improvementScores.e,
