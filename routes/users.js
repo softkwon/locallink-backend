@@ -328,12 +328,12 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         const userAnswersRes = await client.query('SELECT question_code, score FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosis.id]);
         const userAnswersMap = new Map(userAnswersRes.rows.map(a => [a.question_code, parseFloat(a.score)]));
 
-        // --- 2. 점수 계산 로직 ---
+        // --- 2. 새로운 점수 계산 로직 ---
         const initialScores = {
-            total: parseFloat(diagnosis.total_score),
-            e: parseFloat(diagnosis.e_score),
-            s: parseFloat(diagnosis.s_score),
-            g: parseFloat(diagnosis.g_score)
+            total: parseFloat(diagnosis.total_score) || 0,
+            e: parseFloat(diagnosis.e_score) || 0,
+            s: parseFloat(diagnosis.s_score) || 0,
+            g: parseFloat(diagnosis.g_score) || 0
         };
         const improvementScores = { total: 0, e: 0, s: 0, g: 0 };
 
@@ -347,19 +347,21 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                         const improvement = targetScore - initialScore;
                         const category = (questionsMap.get(code) || '').toLowerCase();
 
-                        if (improvement > 0 && category) {
+                        if (improvement > 0 && category && ['e', 's', 'g'].includes(category)) {
                             if (milestone.is_completed) {
                                 improvementScores[category] += improvement;
                             } else {
                                 program.potentialImprovement[category] += improvement;
-                                program.potentialImprovement.total += improvement;
                             }
                         }
                     });
                 }
             });
-            improvementScores.total = improvementScores.e + improvementScores.s + improvementScores.g;
+            // 각 프로그램의 E,S,G 개선 예상 점수를 합산하여 total 계산
+            program.potentialImprovement.total = program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g;
         });
+        // 전체 E,S,G 개선 점수를 합산하여 total 계산
+        improvementScores.total = improvementScores.e + improvementScores.s + improvementScores.g;
 
         const realtimeScores = {
             total: initialScores.total + improvementScores.total,
@@ -380,6 +382,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         client.release();
     }
 });
+
 
 
 
