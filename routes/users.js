@@ -305,8 +305,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         const [
             diagnosisRes,
             improvementScoreRes,
-            customizedProgramsRes,
-            allApplicationsRes
+            programsRes // ★★★ API 호출을 하나로 통합 ★★★
         ] = await Promise.all([
             // 1. 최초 진단 점수 조회
             client.query(`SELECT id, total_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
@@ -320,10 +319,11 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                 [userId]
             ),
 
-            // 3. 맞춤형 프로그램과 타임라인 조회 (★★★ COALESCE 추가로 안정성 강화 ★★★)
+            // 3. ★★★ 사용자가 신청한 모든 프로그램의 상태(status)와 상세 마일스톤을 한 번에 조회 ★★★
             client.query(
                 `SELECT
                     ua.id AS application_id,
+                    ua.status, -- 진행 상태 (신청, 접수, 진행, 완료)
                     ua.admin_message,
                     p.title AS program_title,
                     COALESCE(
@@ -342,16 +342,8 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                  JOIN esg_programs p ON ua.program_id = p.id
                  LEFT JOIN application_milestones am ON ua.id = am.application_id
                  WHERE ua.user_id = $1
-                 GROUP BY ua.id, p.title, ua.admin_message
+                 GROUP BY ua.id, p.title, ua.admin_message, ua.status
                  ORDER BY ua.created_at DESC`,
-                [userId]
-            ),
-
-            // 4. 전체 신청 목록 조회
-            client.query(
-                `SELECT ua.id, ua.status, ua.created_at, p.title as program_title
-                 FROM user_applications ua JOIN esg_programs p ON ua.program_id = p.id
-                 WHERE ua.user_id = $1 ORDER BY ua.created_at DESC`,
                 [userId]
             )
         ]);
@@ -366,8 +358,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                 initialScore,
                 improvementScore,
                 realtimeScore,
-                customizedPrograms: customizedProgramsRes.rows,
-                allApplications: allApplicationsRes.rows
+                programs: programsRes.rows // ★★★ customizedPrograms -> programs로 이름 변경
             }
         });
 
