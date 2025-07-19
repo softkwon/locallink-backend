@@ -223,15 +223,21 @@ router.post('/:id/answers', authMiddleware, async (req, res) => {
 
         const totalScores = { e: 0, s: 0, g: 0 };
         const questionCounts = { e: 0, s: 0, g: 0 };
+        const mainQuestionsAnswered = { e: new Set(), s: new Set(), g: new Set() };
 
         answersRes.rows.forEach(answer => {
             const category = (questionsMap.get(answer.question_code) || '').toLowerCase();
             const score = parseFloat(answer.score) || 0;
             if (totalScores[category] !== undefined) {
                 totalScores[category] += score;
-                questionCounts[category]++;
+                const mainQuestionCode = answer.question_code.split('_')[0];
+                mainQuestionsAnswered[category].add(mainQuestionCode);
             }
         });
+
+        questionCounts.e = mainQuestionsAnswered.e.size;
+        questionCounts.s = mainQuestionsAnswered.s.size;
+        questionCounts.g = mainQuestionsAnswered.g.size;
 
         const averageScores = {
             e: questionCounts.e > 0 ? totalScores.e / questionCounts.e : 0,
@@ -266,6 +272,7 @@ router.post('/:id/answers', authMiddleware, async (req, res) => {
         client.release();
     }
 });
+
 
 // GET /api/diagnoses/:id/results - 특정 진단에 대한 종합 결과 데이터 가져오기
 router.get('/:id/results', authMiddleware, async (req, res) => {
