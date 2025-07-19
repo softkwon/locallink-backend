@@ -302,9 +302,8 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
     const client = await db.pool.connect();
 
     try {
-        const [diagRes, questionsRes, programsRes] = await Promise.all([
+        const [diagRes, programsRes] = await Promise.all([
             client.query(`SELECT id, total_score, e_score, s_score, g_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
-            client.query(`SELECT question_code, esg_category FROM survey_questions`),
             client.query(
                 `SELECT ua.id AS application_id, ua.status, p.title AS program_title, p.esg_category,
                  COALESCE(json_agg(am.* ORDER BY am.display_order) FILTER (WHERE am.id IS NOT NULL), '[]'::json) AS timeline
@@ -323,9 +322,6 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         }
 
         const diagnosis = diagRes.rows[0];
-        const questionsMap = new Map(questionsRes.rows.map(q => [q.question_code, q.esg_category]));
-        const userAnswersRes = await client.query('SELECT question_code, score FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosis.id]);
-        const userAnswersMap = new Map(userAnswersRes.rows.map(a => [a.question_code, parseFloat(a.score)]));
 
         const initialScores = {
             e: parseFloat(diagnosis.e_score) || 0,
