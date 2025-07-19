@@ -860,7 +860,6 @@ router.post(
         const { content, ...otherBodyFields } = req.body;
         const parsedContent = JSON.parse(content);
         
-        // ★★★ 핵심 수정: '뉴스' 방식과 동일하게 placeholder를 기준으로 파일을 찾아 업로드합니다. ★★★
         const finalContent = await Promise.all(parsedContent.map(async (section) => {
             if (!section.images || section.images.length === 0) return section;
 
@@ -930,7 +929,6 @@ router.put(
         const { content, ...otherBodyFields } = req.body;
         const parsedContent = JSON.parse(content);
         
-        // 2. '뉴스' 방식과 동일하게 placeholder와 실제 URL을 처리
         const finalContent = await Promise.all(parsedContent.map(async (section) => {
             if (!section.images || section.images.length === 0) return section;
 
@@ -1029,7 +1027,6 @@ router.delete(
                 }
             }
             
-            // 이하 DB 삭제 로직은 기존과 동일
             const programCodeRes = await client.query('SELECT program_code FROM esg_programs WHERE id = $1', [id]);
             if (programCodeRes.rows.length > 0) {
                 await client.query('DELETE FROM strategy_rules WHERE recommended_program_code = $1', [programCodeRes.rows[0].program_code]);
@@ -1633,7 +1630,6 @@ router.get(
     checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         try {
-            // 1. 화면 표시용 API와 동일한, 모든 데이터를 가져오는 쿼리로 수정합니다.
             const query = `
                 SELECT
                     d.id as diagnosis_id, u.company_name, u.email, d.industry_codes, 
@@ -2415,10 +2411,6 @@ router.get('/news/:id', authMiddleware, async (req, res) => {
             return res.status(404).json({ success: false, message: '게시물을 찾을 수 없습니다.' });
         }
 
-        // ★★★ 수정된 부분 ★★★
-        // 이전에 추가했던 헬퍼 함수를 사용하여 'news' 데이터의 이미지 경로도
-        // 전체 S3 URL로 변환해줍니다.
-        // 함수 이름은 convertProgramContentUrls 이지만, 뉴스 데이터에도 동일하게 작동합니다.
         const processedPost = convertProgramContentUrls(rows[0]);
 
         res.status(200).json({ success: true, post: processedPost });
@@ -2692,7 +2684,6 @@ router.put('/site-content', authMiddleware, checkPermission(['super_admin']), up
             return { ...section, images: updatedImages.filter(Boolean) };
         }));
 
-        // DB 업데이트 로직은 기존과 동일
         const upsertQuery = `
             INSERT INTO site_content (id, content_key, content, content_value, terms_of_service, privacy_policy, marketing_consent_text, updated_at) 
             VALUES (1, 'main_page_sections', $1, $2, $3, $4, $5, NOW())
@@ -3029,6 +3020,24 @@ router.get(
 );
 
 /**
+ * @api {get} /api/admin/survey-questions/all
+ * @description 모든 진단 질문(코드, 전체 텍스트) 목록을 조회합니다.
+ */
+router.get(
+    '/survey-questions/all',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        try {
+            const { rows } = await db.query('SELECT question_code, question_text FROM survey_questions ORDER BY display_order');
+            res.status(200).json({ success: true, questions: rows });
+        } catch (error) {
+            res.status(500).json({ success: false, message: '서버 오류' });
+        }
+    }
+);
+
+/**
  * @api {get} /api/admin/applications/:applicationId/milestones
  * @description "특정 신청 건"에 대한 마일스톤 목록을 조회합니다.
  */
@@ -3037,11 +3046,43 @@ router.get(
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     async (req, res) => {
+        const { applicationId } = req.params;
         try {
-            const { applicationId } = req.params;
-            const { rows } = await db.query('SELECT * FROM application_milestones WHERE application_id = $1 ORDER BY display_order ASC', [applicationId]);
-            res.status(200).json({ success: true, milestones: rows });
+            const appRes = await db.query('SELECT user_id FROM user_applications WHERE id = $1', [applicationId]);
+            if (appRes.rows.length === 0) return res.status(404).json({ success: false, message: '신청 정보를 찾을 수 없습니다.' });
+            const userId = appRes.rows[0].user_id;
+
+            const diagRes = await db.query(`SELECT id FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]);
+            const latestDiagnosisId = diagRes.rows.length > 0 ? diagRes.rows[0].id : null;
+
+            // 마일스톤 정보를 가져오는 기본 쿼리
+            const milestonesRes = await db.query('SELECT * FROM application_milestones WHERE application_id = $1 ORDER BY display_order ASC', [applicationId]);
+            const milestones = milestonesRes.rows;
+
+            // 각 마일스톤에 연결된 질문들의 점수를 찾아서 추가
+            if (latestDiagnosisId && milestones.length > 0) {
+                for (const milestone of milestones) {
+                    milestone.linked_questions_with_scores = []; // 결과를 담을 배열 초기화
+                    if (milestone.linked_question_codes && milestone.linked_question_codes.length > 0) {
+                        const scoreQuery = `
+                            SELECT question_code, score FROM diagnosis_answers
+                            WHERE diagnosis_id = $1 AND question_code = ANY($2::text[])
+                        `;
+                        const scoresRes = await db.query(scoreQuery, [latestDiagnosisId, milestone.linked_question_codes]);
+                        const scoresMap = new Map(scoresRes.rows.map(r => [r.question_code, r.score]));
+                        
+                        // 원래 질문 코드 배열을 순회하며 점수를 매핑
+                        milestone.linked_questions_with_scores = milestone.linked_question_codes.map(code => ({
+                            code: code,
+                            score: scoresMap.get(code) ?? 'N/A' // 답변이 없으면 'N/A'
+                        }));
+                    }
+                }
+            }
+            
+            res.status(200).json({ success: true, milestones: milestones });
         } catch (error) {
+            console.error('마일스톤 조회 에러:', error);
             res.status(500).json({ success: false, message: '서버 오류' });
         }
     }
@@ -3081,76 +3122,59 @@ router.post(
     '/applications/:applicationId/milestones/batch-update',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
-    upload.any(), // FormData로 전송된 모든 파일을 받습니다.
+    upload.any(),
     async (req, res) => {
         const { applicationId } = req.params;
-        const { milestonesData } = req.body; // 화면의 마일스톤 상태를 담은 JSON 문자열
+        const { milestonesData } = req.body;
         const client = await db.pool.connect();
-
         try {
-            await client.query('BEGIN'); // --- 트랜잭션 시작 ---
-
+            await client.query('BEGIN');
             const receivedMilestones = JSON.parse(milestonesData);
-            
-            // 1. DB에 저장된 기존 마일스톤 목록을 가져옵니다.
-            const existingMilestonesRes = await client.query(
-                'SELECT id, attachment_url FROM application_milestones WHERE application_id = $1',
-                [applicationId]
-            );
+            const existingMilestonesRes = await client.query('SELECT id, attachment_url FROM application_milestones WHERE application_id = $1', [applicationId]);
             const existingMilestonesMap = new Map(existingMilestonesRes.rows.map(m => [m.id, m.attachment_url]));
-
             const receivedMilestoneIds = new Set();
 
-            // 2. 화면에서 받은 마일스톤 목록을 하나씩 처리합니다.
             for (const milestone of receivedMilestones) {
                 let attachmentUrl = milestone.attachment_url || null;
-
-                // 2-1. 새 파일이 있으면 S3에 업로드합니다.
                 if (milestone.filePlaceholder) {
                     const file = req.files.find(f => f.fieldname === milestone.filePlaceholder);
                     if (file) {
-                        // 기존 파일이 있었다면 S3에서 삭제
                         if (milestone.id !== 'new' && existingMilestonesMap.has(milestone.id)) {
                             const oldUrl = existingMilestonesMap.get(milestone.id);
                             if(oldUrl) await deleteImageFromS3(oldUrl);
                         }
-                        // 새 파일 업로드 후 URL 저장
                         attachmentUrl = await uploadImageToS3(file.buffer, file.originalname, 'milestones', req.user.userId);
                     }
                 }
+                
+                // ★★★ 핵심 수정: linked_question_codes를 배열(PostgreSQL의 TEXT[] 타입)로 변환 ★★★
+                const linkedCodesArray = milestone.linked_question_codes || [];
 
-                // 2-2. DB에 저장 또는 수정합니다.
                 if (milestone.id === 'new') {
-                    // [INSERT] 새로운 마일스톤
-                    const query = `INSERT INTO application_milestones (application_id, milestone_name, score_value, linked_question_code, content, display_order, attachment_url) VALUES ($1, $2, $3, $4, $5, $6, $7)`;
-                    await client.query(query, [applicationId, milestone.milestone_name, milestone.score_value, milestone.linked_question_code, milestone.content, milestone.display_order, attachmentUrl]);
+                    const query = `INSERT INTO application_milestones (application_id, milestone_name, score_value, linked_question_codes, content, display_order, attachment_url) VALUES ($1, $2, $3, $4, $5, $6, $7)`;
+                    await client.query(query, [applicationId, milestone.milestone_name, milestone.score_value, linkedCodesArray, milestone.content, milestone.display_order, attachmentUrl]);
                 } else {
-                    // [UPDATE] 기존 마일스톤
                     const milestoneId = parseInt(milestone.id, 10);
-                    receivedMilestoneIds.add(milestoneId); // 수정된 항목으로 기록
-                    const query = `UPDATE application_milestones SET milestone_name=$1, score_value=$2, linked_question_code=$3, content=$4, display_order=$5, attachment_url=$6, updated_at=NOW() WHERE id=$7`;
-                    await client.query(query, [milestone.milestone_name, milestone.score_value, milestone.linked_question_code, milestone.content, milestone.display_order, attachmentUrl, milestoneId]);
+                    receivedMilestoneIds.add(milestoneId);
+                    const query = `UPDATE application_milestones SET milestone_name=$1, score_value=$2, linked_question_codes=$3, content=$4, display_order=$5, attachment_url=$6, updated_at=NOW() WHERE id=$7`;
+                    await client.query(query, [milestone.milestone_name, milestone.score_value, linkedCodesArray, milestone.content, milestone.display_order, attachmentUrl, milestoneId]);
                 }
             }
             
-            // 3. 화면에서 사라진 마일스톤은 DB에서 삭제합니다.
             for (const [existingId, existingUrl] of existingMilestonesMap.entries()) {
                 if (!receivedMilestoneIds.has(existingId)) {
-                    // [DELETE]
-                    if (existingUrl) await deleteImageFromS3(existingUrl); // S3 파일 삭제
-                    await client.query('DELETE FROM application_milestones WHERE id = $1', [existingId]); // DB 레코드 삭제
+                    if (existingUrl) await deleteImageFromS3(existingUrl);
+                    await client.query('DELETE FROM application_milestones WHERE id = $1', [existingId]);
                 }
             }
-
-            await client.query('COMMIT'); // --- 모든 작업 성공 시 최종 저장 ---
+            await client.query('COMMIT');
             res.status(200).json({ success: true, message: '모든 변경사항이 성공적으로 저장되었습니다.' });
-
         } catch (error) {
-            await client.query('ROLLBACK'); // --- 오류 발생 시 모든 작업 되돌리기 ---
+            await client.query('ROLLBACK');
             console.error("마일스톤 일괄 저장 에러:", error);
             res.status(500).json({ success: false, message: '저장 중 서버 오류가 발생했습니다.' });
         } finally {
-            client.release(); // DB 연결 반환
+            client.release();
         }
     }
 );
