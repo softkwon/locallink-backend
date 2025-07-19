@@ -335,10 +335,10 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
             s: parseFloat(diagnosis.s_score) || 0,
             g: parseFloat(diagnosis.g_score) || 0
         };
-        const improvementScores = { total: 0, e: 0, s: 0, g: 0 };
+        const improvementScores = { e: 0, s: 0, g: 0 };
 
         programsRes.rows.forEach(program => {
-            program.potentialImprovement = { total: 0, e: 0, s: 0, g: 0 }; // 프로그램별 개선 점수 초기화
+            program.potentialImprovement = { e: 0, s: 0, g: 0 };
             program.timeline.forEach(milestone => {
                 if (milestone.linked_question_codes && Array.isArray(milestone.linked_question_codes)) {
                     milestone.linked_question_codes.forEach(code => {
@@ -357,18 +357,19 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                     });
                 }
             });
-            // 각 프로그램의 E,S,G 개선 예상 점수를 합산하여 total 계산
             program.potentialImprovement.total = program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g;
         });
-        // 전체 E,S,G 개선 점수를 합산하여 total 계산
-        improvementScores.total = improvementScores.e + improvementScores.s + improvementScores.g;
 
         const realtimeScores = {
-            total: initialScores.total + improvementScores.total,
             e: initialScores.e + improvementScores.e,
             s: initialScores.s + improvementScores.s,
             g: initialScores.g + improvementScores.g
         };
+        // ★★★ 총점은 E, S, G의 평균값으로 계산 ★★★
+        realtimeScores.total = (realtimeScores.e + realtimeScores.s + realtimeScores.g) / 3;
+        
+        // ★★★ 프로그램 개선 총점 추가 ★★★
+        improvementScores.total = improvementScores.e + improvementScores.s + improvementScores.g;
         
         res.status(200).json({
             success: true,
