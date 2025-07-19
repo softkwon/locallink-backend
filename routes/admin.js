@@ -2957,106 +2957,189 @@ router.post(
 );
 
 // =================================================================
-// ▼▼▼ 프로그램별 마일스톤 관리 API (신규 추가) ▼▼▼ / ver1.1 250719
+// ▼▼▼ [V2] 사용자 맞춤형 마일스톤 관리 API (신규) ▼▼▼
 // =================================================================
 
 /**
- * @api {get} /api/admin/programs/:programId/milestones
- * @description 특정 프로그램에 설정된 모든 마일스톤 목록을 조회합니다.
+ * @api {get} /api/admin/my-programs
+ * @description (로그인된 콘텐츠 매니저가) "자신이 생성한" 프로그램 목록만 조회합니다.
  */
 router.get(
-    '/programs/:programId/milestones',
+    '/my-programs',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     async (req, res) => {
-        const { programId } = req.params;
         try {
-            const { rows } = await db.query(
-                'SELECT * FROM program_milestones WHERE program_id = $1 ORDER BY display_order ASC',
-                [programId]
-            );
+            const { userId, role } = req.user;
+            let query = 'SELECT id, title FROM esg_programs';
+            const values = [];
+            // 슈퍼관리자가 아니면, 자기가 만든 프로그램만 조회
+            if (role !== 'super_admin' && role !== 'vice_super_admin') {
+                query += ' WHERE author_id = $1';
+                values.push(userId);
+            }
+            query += ' ORDER BY title ASC';
+            const { rows } = await db.query(query, values);
+            res.status(200).json({ success: true, programs: rows });
+        } catch (error) {
+            res.status(500).json({ success: false, message: '서버 오류' });
+        }
+    }
+);
+
+/**
+ * @api {get} /api/admin/programs/:programId/applications
+ * @description 특정 프로그램을 "신청한" 사용자(신청 건) 목록을 조회합니다.
+ */
+router.get(
+    '/programs/:programId/applications',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        try {
+            const { programId } = req.params;
+            const query = `
+                SELECT ua.id, u.company_name
+                FROM user_applications ua
+                JOIN users u ON ua.user_id = u.id
+                WHERE ua.program_id = $1
+                ORDER BY u.company_name ASC`;
+            const { rows } = await db.query(query, [programId]);
+            res.status(200).json({ success: true, applications: rows });
+        } catch (error) {
+            res.status(500).json({ success: false, message: '서버 오류' });
+        }
+    }
+);
+
+/**
+ * @api {get} /api/admin/applications/:applicationId/milestones
+ * @description "특정 신청 건"에 대한 마일스톤 목록을 조회합니다.
+ */
+router.get(
+    '/applications/:applicationId/milestones',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        try {
+            const { applicationId } = req.params;
+            const { rows } = await db.query('SELECT * FROM application_milestones WHERE application_id = $1 ORDER BY display_order ASC', [applicationId]);
             res.status(200).json({ success: true, milestones: rows });
         } catch (error) {
-            console.error('마일스톤 조회 에러:', error);
-            res.status(500).json({ success: false, message: '서버 에러' });
+            res.status(500).json({ success: false, message: '서버 오류' });
         }
     }
 );
 
 /**
- * @api {post} /api/admin/programs/:programId/milestones
- * @description 특정 프로그램에 새로운 마일스톤을 추가합니다.
- * @body { milestone_name: string, score_value: number, display_order: number }
+ * @api {post} /api/admin/applications/:applicationId/milestones
+ * @description "특정 신청 건"에 새 마일스톤을 추가합니다. (파일 제외)
  */
 router.post(
-    '/programs/:programId/milestones',
+    '/applications/:applicationId/milestones',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     async (req, res) => {
-        const { programId } = req.params;
-        const { milestone_name, score_value, display_order } = req.body;
+        const { applicationId } = req.params;
+        const { milestone_name, score_value, linked_question_code, content, display_order } = req.body;
         try {
             const query = `
-                INSERT INTO program_milestones (program_id, milestone_name, score_value, display_order)
-                VALUES ($1, $2, $3, $4) RETURNING *`;
-            const { rows } = await db.query(query, [programId, milestone_name, score_value, display_order]);
+                INSERT INTO application_milestones (application_id, milestone_name, score_value, linked_question_code, content, display_order)
+                VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`;
+            const { rows } = await db.query(query, [applicationId, milestone_name, score_value, linked_question_code, content, display_order]);
             res.status(201).json({ success: true, message: '마일스톤이 추가되었습니다.', milestone: rows[0] });
         } catch (error) {
-            console.error('마일스톤 추가 에러:', error);
-            res.status(500).json({ success: false, message: '서버 에러' });
+            res.status(500).json({ success: false, message: '서버 오류' });
         }
     }
 );
 
+// =================================================================
+// ▼▼▼ [V2] 사용자 맞춤형 마일스톤 "일괄 저장" API (신규) ▼▼▼
+// =================================================================
 /**
- * @api {put} /api/admin/milestones/:milestoneId
- * @description 특정 마일스톤의 내용을 수정합니다.
+ * @api {post} /api/admin/applications/:applicationId/milestones/batch-update
+ * @description "특정 신청 건"의 모든 마일스톤 변경사항(추가/수정/삭제/파일)을 한 번에 저장합니다.
  */
-router.put(
-    '/milestones/:milestoneId',
+router.post(
+    '/applications/:applicationId/milestones/batch-update',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    upload.any(), // FormData로 전송된 모든 파일을 받습니다.
     async (req, res) => {
-        const { milestoneId } = req.params;
-        const { milestone_name, score_value, display_order } = req.body;
+        const { applicationId } = req.params;
+        const { milestonesData } = req.body; // 화면의 마일스톤 상태를 담은 JSON 문자열
+        const client = await db.pool.connect();
+
         try {
-            const query = `
-                UPDATE program_milestones
-                SET milestone_name = $1, score_value = $2, display_order = $3
-                WHERE id = $4 RETURNING *`;
-            const { rows } = await db.query(query, [milestone_name, score_value, display_order, milestoneId]);
-            if (rows.length === 0) {
-                 return res.status(404).json({ success: false, message: '마일스톤을 찾을 수 없습니다.' });
+            await client.query('BEGIN'); // --- 트랜잭션 시작 ---
+
+            const receivedMilestones = JSON.parse(milestonesData);
+            
+            // 1. DB에 저장된 기존 마일스톤 목록을 가져옵니다.
+            const existingMilestonesRes = await client.query(
+                'SELECT id, attachment_url FROM application_milestones WHERE application_id = $1',
+                [applicationId]
+            );
+            const existingMilestonesMap = new Map(existingMilestonesRes.rows.map(m => [m.id, m.attachment_url]));
+
+            const receivedMilestoneIds = new Set();
+
+            // 2. 화면에서 받은 마일스톤 목록을 하나씩 처리합니다.
+            for (const milestone of receivedMilestones) {
+                let attachmentUrl = milestone.attachment_url || null;
+
+                // 2-1. 새 파일이 있으면 S3에 업로드합니다.
+                if (milestone.filePlaceholder) {
+                    const file = req.files.find(f => f.fieldname === milestone.filePlaceholder);
+                    if (file) {
+                        // 기존 파일이 있었다면 S3에서 삭제
+                        if (milestone.id !== 'new' && existingMilestonesMap.has(milestone.id)) {
+                            const oldUrl = existingMilestonesMap.get(milestone.id);
+                            if(oldUrl) await deleteImageFromS3(oldUrl);
+                        }
+                        // 새 파일 업로드 후 URL 저장
+                        attachmentUrl = await uploadImageToS3(file.buffer, file.originalname, 'milestones', req.user.userId);
+                    }
+                }
+
+                // 2-2. DB에 저장 또는 수정합니다.
+                if (milestone.id === 'new') {
+                    // [INSERT] 새로운 마일스톤
+                    const query = `INSERT INTO application_milestones (application_id, milestone_name, score_value, linked_question_code, content, display_order, attachment_url) VALUES ($1, $2, $3, $4, $5, $6, $7)`;
+                    await client.query(query, [applicationId, milestone.milestone_name, milestone.score_value, milestone.linked_question_code, milestone.content, milestone.display_order, attachmentUrl]);
+                } else {
+                    // [UPDATE] 기존 마일스톤
+                    const milestoneId = parseInt(milestone.id, 10);
+                    receivedMilestoneIds.add(milestoneId); // 수정된 항목으로 기록
+                    const query = `UPDATE application_milestones SET milestone_name=$1, score_value=$2, linked_question_code=$3, content=$4, display_order=$5, attachment_url=$6, updated_at=NOW() WHERE id=$7`;
+                    await client.query(query, [milestone.milestone_name, milestone.score_value, milestone.linked_question_code, milestone.content, milestone.display_order, attachmentUrl, milestoneId]);
+                }
             }
-            res.status(200).json({ success: true, message: '마일스톤이 수정되었습니다.', milestone: rows[0] });
+            
+            // 3. 화면에서 사라진 마일스톤은 DB에서 삭제합니다.
+            for (const [existingId, existingUrl] of existingMilestonesMap.entries()) {
+                if (!receivedMilestoneIds.has(existingId)) {
+                    // [DELETE]
+                    if (existingUrl) await deleteImageFromS3(existingUrl); // S3 파일 삭제
+                    await client.query('DELETE FROM application_milestones WHERE id = $1', [existingId]); // DB 레코드 삭제
+                }
+            }
+
+            await client.query('COMMIT'); // --- 모든 작업 성공 시 최종 저장 ---
+            res.status(200).json({ success: true, message: '모든 변경사항이 성공적으로 저장되었습니다.' });
+
         } catch (error) {
-            console.error('마일스톤 수정 에러:', error);
-            res.status(500).json({ success: false, message: '서버 에러' });
+            await client.query('ROLLBACK'); // --- 오류 발생 시 모든 작업 되돌리기 ---
+            console.error("마일스톤 일괄 저장 에러:", error);
+            res.status(500).json({ success: false, message: '저장 중 서버 오류가 발생했습니다.' });
+        } finally {
+            client.release(); // DB 연결 반환
         }
     }
 );
 
-/**
- * @api {delete} /api/admin/milestones/:milestoneId
- * @description 특정 마일스톤을 삭제합니다.
- */
-router.delete(
-    '/milestones/:milestoneId',
-    authMiddleware,
-    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
-    async (req, res) => {
-        const { milestoneId } = req.params;
-        try {
-            const { rowCount } = await db.query('DELETE FROM program_milestones WHERE id = $1', [milestoneId]);
-            if (rowCount === 0) {
-                return res.status(404).json({ success: false, message: '마일스톤을 찾을 수 없습니다.' });
-            }
-            res.status(200).json({ success: true, message: '마일스톤이 삭제되었습니다.' });
-        } catch (error) {
-            console.error('마일스톤 삭제 에러:', error);
-            res.status(500).json({ success: false, message: '서버 에러' });
-        }
-    }
-);
+
+// (파일 업로드, 수정, 삭제 API는 다음 단계에서 추가...)
 
 module.exports = router;
