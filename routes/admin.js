@@ -3132,8 +3132,10 @@ router.post(
         const { applicationId } = req.params;
         const { milestonesData } = req.body;
         const client = await db.pool.connect();
+
         try {
             await client.query('BEGIN');
+
             const receivedMilestones = JSON.parse(milestonesData);
             const existingMilestonesRes = await client.query('SELECT id, attachment_url FROM application_milestones WHERE application_id = $1', [applicationId]);
             const existingMilestonesMap = new Map(existingMilestonesRes.rows.map(m => [m.id, m.attachment_url]));
@@ -3151,18 +3153,17 @@ router.post(
                         attachmentUrl = await uploadImageToS3(file.buffer, file.originalname, 'milestones', req.user.userId);
                     }
                 }
-                
-                // ★★★ 핵심 수정: linked_question_codes를 배열(PostgreSQL의 TEXT[] 타입)로 변환 ★★★
-                const linkedCodesArray = milestone.linked_question_codes || [];
 
                 if (milestone.id === 'new') {
-                    const query = `INSERT INTO application_milestones (application_id, milestone_name, score_value, linked_question_codes, content, display_order, attachment_url) VALUES ($1, $2, $3, $4, $5, $6, $7)`;
-                    await client.query(query, [applicationId, milestone.milestone_name, milestone.score_value, linkedCodesArray, milestone.content, milestone.display_order, attachmentUrl]);
+                    // ★★★ [핵심 수정] INSERT 쿼리에 improvement_category 추가 ★★★
+                    const query = `INSERT INTO application_milestones (application_id, milestone_name, score_value, improvement_category, content, display_order, attachment_url) VALUES ($1, $2, $3, $4, $5, $6, $7)`;
+                    await client.query(query, [applicationId, milestone.milestone_name, milestone.score_value, milestone.improvement_category, milestone.content, milestone.display_order, attachmentUrl]);
                 } else {
                     const milestoneId = parseInt(milestone.id, 10);
                     receivedMilestoneIds.add(milestoneId);
-                    const query = `UPDATE application_milestones SET milestone_name=$1, score_value=$2, linked_question_codes=$3, content=$4, display_order=$5, attachment_url=$6, updated_at=NOW() WHERE id=$7`;
-                    await client.query(query, [milestone.milestone_name, milestone.score_value, linkedCodesArray, milestone.content, milestone.display_order, attachmentUrl, milestoneId]);
+                    // ★★★ [핵심 수정] UPDATE 쿼리에 improvement_category 추가 ★★★
+                    const query = `UPDATE application_milestones SET milestone_name=$1, score_value=$2, improvement_category=$3, content=$4, display_order=$5, attachment_url=$6, updated_at=NOW() WHERE id=$7`;
+                    await client.query(query, [milestone.milestone_name, milestone.score_value, milestone.improvement_category, milestone.content, milestone.display_order, attachmentUrl, milestoneId]);
                 }
             }
             
@@ -3172,8 +3173,10 @@ router.post(
                     await client.query('DELETE FROM application_milestones WHERE id = $1', [existingId]);
                 }
             }
+
             await client.query('COMMIT');
             res.status(200).json({ success: true, message: '모든 변경사항이 성공적으로 저장되었습니다.' });
+
         } catch (error) {
             await client.query('ROLLBACK');
             console.error("마일스톤 일괄 저장 에러:", error);
