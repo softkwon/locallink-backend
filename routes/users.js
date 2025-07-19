@@ -324,12 +324,14 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         }
 
         const diagnosis = diagRes.rows[0];
+        
+        // ★★★ [핵심 수정] E, S, G 각 카테고리별 "답변된" 질문 개수 계산 ★★★
+        const answeredQuestionsRes = await client.query('SELECT question_code FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosis.id]);
+        const questionCounts = { e: 0, s: 0, g: 0 };
         const questionsMap = new Map(questionsRes.rows.map(q => [q.question_code, q.esg_category]));
         
-        // ★★★ [핵심 수정] E, S, G 각 카테고리별 질문 개수 계산 ★★★
-        const questionCounts = { e: 0, s: 0, g: 0 };
-        questionsRes.rows.forEach(q => {
-            const category = (q.esg_category || '').toLowerCase();
+        answeredQuestionsRes.rows.forEach(ans => {
+            const category = (questionsMap.get(ans.question_code) || '').toLowerCase();
             if (questionCounts[category] !== undefined) {
                 questionCounts[category]++;
             }
@@ -346,7 +348,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         const improvementScores = { e: 0, s: 0, g: 0 };
 
         programsRes.rows.forEach(program => {
-            program.potentialImprovement = { e: 0, s: 0, g: 0 };
+            program.potentialImprovement = { e: 0, s: 0, g: 0 }; // 프로그램별 개선 점수 초기화
             program.timeline.forEach(milestone => {
                 const improvement = milestone.score_value || 0;
                 const category = (milestone.improvement_category || '').toLowerCase();
@@ -358,7 +360,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                     }
                 }
             });
-            program.potentialImprovement.total = program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g;
+            program.potentialImprovement.total = (program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g) / 3;
         });
         improvementScores.total = (improvementScores.e + improvementScores.s + improvementScores.g) / 3;
 
