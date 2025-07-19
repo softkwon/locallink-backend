@@ -303,10 +303,19 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
 
     try {
         const [diagRes, questionsRes, programsRes] = await Promise.all([
-            // ★★★ total_score가 아닌, e_total_score 등 총점 컬럼을 가져오도록 수정
             client.query(`SELECT id, e_score, s_score, g_score, e_total_score, s_total_score, g_total_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
             client.query(`SELECT question_code, esg_category FROM survey_questions`),
-            client.query( /* ... 프로그램 조회 쿼리는 이전과 동일 ... */ )
+            client.query(
+                `SELECT ua.id AS application_id, ua.status, p.title AS program_title, p.esg_category,
+                 COALESCE(json_agg(am.* ORDER BY am.display_order) FILTER (WHERE am.id IS NOT NULL), '[]'::json) AS timeline
+                 FROM user_applications ua
+                 JOIN esg_programs p ON ua.program_id = p.id
+                 LEFT JOIN application_milestones am ON ua.id = am.application_id
+                 WHERE ua.user_id = $1
+                 GROUP BY ua.id, p.title, p.esg_category, ua.status
+                 ORDER BY ua.created_at DESC`,
+                [userId]
+            )
         ]);
 
         if (diagRes.rows.length === 0) {
@@ -329,16 +338,28 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         };
         initialScores.total = (initialScores.e + initialScores.s + initialScores.g) / 3;
         
-        // ★★★ [핵심 수정] DB에 저장된 "총점"을 기준으로 계산 시작
+        // ★★★ [핵심 수정] DB의 총점 값이 null일 경우, 평균 점수를 기반으로 총점을 역산 ★★★
         const initialTotalScores = {
-            e: parseFloat(diagnosis.e_total_score) || 0,
-            s: parseFloat(diagnosis.s_total_score) || 0,
-            g: parseFloat(diagnosis.g_total_score) || 0
+            e: parseFloat(diagnosis.e_total_score) || (initialScores.e * questionCounts.e),
+            s: parseFloat(diagnosis.s_total_score) || (initialScores.s * questionCounts.s),
+            g: parseFloat(diagnosis.g_total_score) || (initialScores.g * questionCounts.g)
         };
 
         const improvementScores = { e: 0, s: 0, g: 0 };
         programsRes.rows.forEach(program => {
-            // ... (potentialImprovement 계산 로직은 이전과 동일) ...
+            program.potentialImprovement = { e: 0, s: 0, g: 0 };
+            program.timeline.forEach(milestone => {
+                const improvement = milestone.score_value || 0;
+                const category = (milestone.improvement_category || '').toLowerCase();
+                if (improvement > 0 && ['e', 's', 'g'].includes(category)) {
+                    if (milestone.is_completed) {
+                        improvementScores[category] += improvement;
+                    } else {
+                        program.potentialImprovement[category] += improvement;
+                    }
+                }
+            });
+            program.potentialImprovement.total = (program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g) / 3;
         });
         
         const realtimeScores = { e: 0, s: 0, g: 0, total: 0 };
@@ -353,7 +374,6 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         });
         realtimeScores.total = (realtimeScores.e + realtimeScores.s + realtimeScores.g) / 3;
         
-        // ★★★ [핵심 수정] 프론트엔드에 표시될 "개선 점수"는 평균 점수의 차이로 계산
         const finalImprovementScores = {
             e: realtimeScores.e - initialScores.e,
             s: realtimeScores.s - initialScores.s,
