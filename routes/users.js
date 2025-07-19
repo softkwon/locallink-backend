@@ -302,8 +302,10 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
     const client = await db.pool.connect();
 
     try {
-        const [diagRes, programsRes] = await Promise.all([
+        // --- 1. 계산에 필요한 모든 데이터를 한 번에 가져옵니다. ---
+        const [diagRes, questionsRes, programsRes] = await Promise.all([
             client.query(`SELECT id, total_score, e_score, s_score, g_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
+            client.query(`SELECT question_code, esg_category FROM survey_questions`),
             client.query(
                 `SELECT ua.id AS application_id, ua.status, p.title AS program_title, p.esg_category,
                  COALESCE(json_agg(am.* ORDER BY am.display_order) FILTER (WHERE am.id IS NOT NULL), '[]'::json) AS timeline
@@ -322,7 +324,18 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         }
 
         const diagnosis = diagRes.rows[0];
+        const questionsMap = new Map(questionsRes.rows.map(q => [q.question_code, q.esg_category]));
+        
+        // ★★★ [핵심 수정] E, S, G 각 카테고리별 질문 개수 계산 ★★★
+        const questionCounts = { e: 0, s: 0, g: 0 };
+        questionsRes.rows.forEach(q => {
+            const category = (q.esg_category || '').toLowerCase();
+            if (questionCounts[category] !== undefined) {
+                questionCounts[category]++;
+            }
+        });
 
+        // --- 2. 새로운 점수 계산 로직 ---
         const initialScores = {
             e: parseFloat(diagnosis.e_score) || 0,
             s: parseFloat(diagnosis.s_score) || 0,
@@ -347,15 +360,20 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
             });
             program.potentialImprovement.total = program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g;
         });
-        
-        // ★★★ [핵심 수정] 개선 총점은 E, S, G 개선 점수의 "평균"으로 계산 ★★★
         improvementScores.total = (improvementScores.e + improvementScores.s + improvementScores.g) / 3;
 
-        const realtimeScores = {
-            e: initialScores.e + improvementScores.e,
-            s: initialScores.s + improvementScores.s,
-            g: initialScores.g + improvementScores.g
-        };
+        // ★★★ [핵심 수정] 최종 실시간 점수를 "총점 합산 후 평균" 방식으로 계산 ★★★
+        const realtimeScores = { e: 0, s: 0, g: 0, total: 0 };
+        const categories = ['e', 's', 'g'];
+        categories.forEach(cat => {
+            if (questionCounts[cat] > 0) {
+                const initialTotal = initialScores[cat] * questionCounts[cat];
+                const improvedTotal = initialTotal + improvementScores[cat];
+                realtimeScores[cat] = improvedTotal / questionCounts[cat];
+            } else {
+                realtimeScores[cat] = initialScores[cat]; // 해당 카테고리 질문이 없으면 그대로
+            }
+        });
         realtimeScores.total = (realtimeScores.e + realtimeScores.s + realtimeScores.g) / 3;
         
         res.status(200).json({
