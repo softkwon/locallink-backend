@@ -334,6 +334,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                             'content', am.content,
                             'attachmentUrl', am.attachment_url,
                             'isCompleted', am.is_completed
+                            'scoreValue', am.score_value
                         ) ORDER BY am.display_order
                     ) FILTER (WHERE am.id IS NOT NULL) AS timeline
                  FROM user_applications ua
