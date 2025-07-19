@@ -2884,30 +2884,46 @@ router.post(
 router.get(
     '/applications/:applicationId/milestones',
     authMiddleware,
-    checkPermission(['super_admin', 'vice_super_admin', 'user_manager']),
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     async (req, res) => {
         const { applicationId } = req.params;
+        const client = await db.pool.connect();
         try {
-            // 프로그램의 모든 마일스톤을 가져오면서, 현재 신청 건에 대해 완료되었는지 여부를 LEFT JOIN으로 확인합니다.
+            // 1. 신청 정보에서 user_id를 찾습니다.
+            const appRes = await client.query('SELECT user_id FROM user_applications WHERE id = $1', [applicationId]);
+            if (appRes.rows.length === 0) {
+                return res.status(404).json({ success: false, message: '신청 정보를 찾을 수 없습니다.' });
+            }
+            const userId = appRes.rows[0].user_id;
+
+            // 2. 해당 사용자의 가장 최근 진단 ID를 찾습니다.
+            const diagRes = await client.query(
+                `SELECT id FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`,
+                [userId]
+            );
+            const latestDiagnosisId = diagRes.rows.length > 0 ? diagRes.rows[0].id : null;
+
+            // 3. 마일스톤 정보와 사용자의 답변 점수를 LEFT JOIN으로 함께 조회합니다.
             const query = `
                 SELECT
-                    pm.id,
-                    pm.milestone_name,
-                    pm.score_value,
-                    pm.display_order,
-                    CASE WHEN ucm.id IS NOT NULL THEN true ELSE false END AS is_completed,
-                    ucm.completed_at
-                FROM program_milestones pm
-                LEFT JOIN user_milestone_completions ucm
-                    ON pm.id = ucm.milestone_id AND ucm.application_id = $1
-                WHERE pm.program_id = (SELECT program_id FROM user_applications WHERE id = $1)
-                ORDER BY pm.display_order;
+                    am.id, am.milestone_name, am.score_value, am.linked_question_code,
+                    am.content, am.attachment_url, am.is_completed, am.completed_at, am.display_order,
+                    da.score AS current_user_score
+                FROM application_milestones am
+                LEFT JOIN diagnosis_answers da
+                    ON am.linked_question_code = da.question_code AND da.diagnosis_id = $2
+                WHERE am.application_id = $1
+                ORDER BY am.display_order ASC, am.id ASC;
             `;
-            const { rows } = await db.query(query, [applicationId]);
+            const { rows } = await client.query(query, [applicationId, latestDiagnosisId]);
+            
             res.status(200).json({ success: true, milestones: rows });
+
         } catch (error) {
-            console.error('마일스톤 목록 조회 에러:', error);
-            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+            console.error('마일스톤 조회 에러:', error);
+            res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+        } finally {
+            client.release();
         }
     }
 );
