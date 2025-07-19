@@ -303,6 +303,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
 
     try {
         const [diagRes, questionsRes, programsRes] = await Promise.all([
+            // ★★★ total_score가 아닌, e_total_score 등 총점 컬럼을 가져오도록 수정
             client.query(`SELECT id, e_score, s_score, g_score, e_total_score, s_total_score, g_total_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
             client.query(`SELECT question_code, esg_category FROM survey_questions`),
             client.query(
@@ -338,7 +339,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         };
         initialScores.total = (initialScores.e + initialScores.s + initialScores.g) / 3;
         
-        // ★★★ [핵심 수정] DB의 총점 값이 null일 경우, 평균 점수를 기반으로 총점을 역산 ★★★
+        // ★★★ [핵심 수정] DB에 저장된 "총점"을 기준으로 계산 시작
         const initialTotalScores = {
             e: parseFloat(diagnosis.e_total_score) || (initialScores.e * questionCounts.e),
             s: parseFloat(diagnosis.s_total_score) || (initialScores.s * questionCounts.s),
@@ -374,6 +375,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         });
         realtimeScores.total = (realtimeScores.e + realtimeScores.s + realtimeScores.g) / 3;
         
+        // ★★★ [핵심 수정] 프론트엔드에 표시될 "개선 점수"는 평균 점수의 차이로 계산
         const finalImprovementScores = {
             e: realtimeScores.e - initialScores.e,
             s: realtimeScores.s - initialScores.s,
