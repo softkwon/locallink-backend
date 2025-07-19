@@ -360,7 +360,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
                     }
                 }
             });
-            program.potentialImprovement.total = (program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g) / 3;
+            program.potentialImprovement.total = (program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g);
         });
         
         const realtimeScores = { e: 0, s: 0, g: 0, total: 0 };
