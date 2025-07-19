@@ -2878,43 +2878,48 @@ router.get(
     checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     async (req, res) => {
         const { applicationId } = req.params;
-        const client = await db.pool.connect();
         try {
             // 1. 신청 정보에서 user_id를 찾습니다.
-            const appRes = await client.query('SELECT user_id FROM user_applications WHERE id = $1', [applicationId]);
+            const appRes = await db.query('SELECT user_id FROM user_applications WHERE id = $1', [applicationId]);
             if (appRes.rows.length === 0) {
                 return res.status(404).json({ success: false, message: '신청 정보를 찾을 수 없습니다.' });
             }
             const userId = appRes.rows[0].user_id;
 
-            // 2. 해당 사용자의 가장 최근 진단 ID를 찾습니다.
-            const diagRes = await client.query(
-                `SELECT id FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`,
-                [userId]
-            );
+            // 2. 해당 사용자의 가장 최근 진단 ID와 "모든 답변 점수"를 한 번에 가져옵니다.
+            const diagRes = await db.query(`SELECT id FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]);
             const latestDiagnosisId = diagRes.rows.length > 0 ? diagRes.rows[0].id : null;
 
-            // 3. 마일스톤 정보와 사용자의 답변 점수를 LEFT JOIN으로 함께 조회합니다.
-            const query = `
-                SELECT
-                    am.id, am.milestone_name, am.score_value, am.linked_question_code,
-                    am.content, am.attachment_url, am.is_completed, am.completed_at, am.display_order,
-                    da.score AS current_user_score
-                FROM application_milestones am
-                LEFT JOIN diagnosis_answers da
-                    ON am.linked_question_code = da.question_code AND da.diagnosis_id = $2
-                WHERE am.application_id = $1
-                ORDER BY am.display_order ASC, am.id ASC;
-            `;
-            const { rows } = await client.query(query, [applicationId, latestDiagnosisId]);
+            let userScoresMap = new Map();
+            if (latestDiagnosisId) {
+                const userScoresRes = await db.query('SELECT question_code, score FROM diagnosis_answers WHERE diagnosis_id = $1', [latestDiagnosisId]);
+                userScoresMap = new Map(userScoresRes.rows.map(r => [r.question_code, r.score]));
+            }
+
+            // 3. 마일스톤 정보를 가져옵니다.
+            const milestonesRes = await db.query('SELECT * FROM application_milestones WHERE application_id = $1 ORDER BY display_order ASC, id ASC', [applicationId]);
+            const milestones = milestonesRes.rows;
+
+            // 4. 가져온 마일스톤 정보에 "현재 점수" 데이터를 추가합니다.
+            for (const milestone of milestones) {
+                milestone.linked_questions_with_scores = [];
+                if (Array.isArray(milestone.linked_question_codes)) {
+                    milestone.linked_questions_with_scores = milestone.linked_question_codes.map(code => ({
+                        code: code,
+                        score: userScoresMap.has(code) ? userScoresMap.get(code) : 'N/A'
+                    }));
+                }
+            }
             
-            res.status(200).json({ success: true, milestones: rows });
+            res.status(200).json({ 
+                success: true, 
+                milestones: milestones,
+                allUserScores: Object.fromEntries(userScoresMap) // 프론트엔드에서 동적으로 점수를 표시하기 위한 전체 점수 데이터
+            });
 
         } catch (error) {
-            console.error('마일스톤 조회 에러:', error);
+            console.error(`[CRITICAL] 마일스톤 조회 에러 (Application ID: ${applicationId}):`, error);
             res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
-        } finally {
-            client.release();
         }
     }
 );
