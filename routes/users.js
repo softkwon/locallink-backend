@@ -302,10 +302,8 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
     const client = await db.pool.connect();
 
     try {
-        // --- 1. 진단, 답변, 질문 유형 등 계산에 필요한 모든 데이터를 한 번에 가져옵니다. ---
-        const [diagRes, questionsRes, programsRes] = await Promise.all([
+        const [diagRes, programsRes] = await Promise.all([
             client.query(`SELECT id, total_score, e_score, s_score, g_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
-            client.query(`SELECT question_code, esg_category FROM survey_questions`),
             client.query(
                 `SELECT ua.id AS application_id, ua.status, p.title AS program_title,
                  COALESCE(json_agg(am.* ORDER BY am.display_order) FILTER (WHERE am.id IS NOT NULL), '[]'::json) AS timeline
@@ -324,52 +322,41 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         }
 
         const diagnosis = diagRes.rows[0];
-        const questionsMap = new Map(questionsRes.rows.map(q => [q.question_code, q.esg_category]));
-        const userAnswersRes = await client.query('SELECT question_code, score FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosis.id]);
-        const userAnswersMap = new Map(userAnswersRes.rows.map(a => [a.question_code, parseFloat(a.score)]));
 
         // --- 2. 새로운 점수 계산 로직 ---
         const initialScores = {
-            total: parseFloat(diagnosis.total_score) || 0,
             e: parseFloat(diagnosis.e_score) || 0,
             s: parseFloat(diagnosis.s_score) || 0,
             g: parseFloat(diagnosis.g_score) || 0
         };
+        initialScores.total = (initialScores.e + initialScores.s + initialScores.g) / 3;
+
         const improvementScores = { e: 0, s: 0, g: 0 };
 
         programsRes.rows.forEach(program => {
             program.potentialImprovement = { e: 0, s: 0, g: 0 };
             program.timeline.forEach(milestone => {
-                if (milestone.linked_question_codes && Array.isArray(milestone.linked_question_codes)) {
-                    milestone.linked_question_codes.forEach(code => {
-                        const initialScore = userAnswersMap.get(code) || 0;
-                        const targetScore = milestone.score_value || 0;
-                        const improvement = targetScore - initialScore;
-                        const category = (questionsMap.get(code) || '').toLowerCase();
+                const improvement = milestone.score_value || 0;
+                const category = (milestone.improvement_category || '').toLowerCase();
 
-                        if (improvement > 0 && category && ['e', 's', 'g'].includes(category)) {
-                            if (milestone.is_completed) {
-                                improvementScores[category] += improvement;
-                            } else {
-                                program.potentialImprovement[category] += improvement;
-                            }
-                        }
-                    });
+                if (improvement > 0 && ['e', 's', 'g'].includes(category)) {
+                    if (milestone.is_completed) {
+                        improvementScores[category] += improvement;
+                    } else {
+                        program.potentialImprovement[category] += improvement;
+                    }
                 }
             });
             program.potentialImprovement.total = program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g;
         });
+        improvementScores.total = improvementScores.e + improvementScores.s + improvementScores.g;
 
         const realtimeScores = {
             e: initialScores.e + improvementScores.e,
             s: initialScores.s + improvementScores.s,
             g: initialScores.g + improvementScores.g
         };
-        // ★★★ 총점은 E, S, G의 평균값으로 계산 ★★★
         realtimeScores.total = (realtimeScores.e + realtimeScores.s + realtimeScores.g) / 3;
-        
-        // ★★★ 프로그램 개선 총점 추가 ★★★
-        improvementScores.total = improvementScores.e + improvementScores.s + improvementScores.g;
         
         res.status(200).json({
             success: true,
