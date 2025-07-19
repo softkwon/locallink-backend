@@ -2832,5 +2832,128 @@ router.put('/applications/:id/status', authMiddleware, checkPermission(['super_a
     }
 });
 
+// =================================================================
+// ▼▼▼ 맞춤형 프로그램 관리 API (신규 추가) ▼▼▼
+// =================================================================
+
+/**
+ * @api {post} /api/admin/users/:userId/assign-program
+ * @description [신규] 특정 고객사에게 맞춤형 프로그램을 할당하고 신청(application) 레코드를 생성하는 API
+ * @permission super_admin, vice_super_admin, user_manager
+ * @body { program_id: number, admin_message: string }
+ */
+router.post(
+    '/users/:userId/assign-program',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'user_manager']),
+    async (req, res) => {
+        const { userId } = req.params;
+        const { program_id, admin_message } = req.body;
+
+        if (!program_id) {
+            return res.status(400).json({ success: false, message: 'program_id가 필요합니다.' });
+        }
+
+        try {
+            // user_applications 테이블에 'assigned'(할당됨) 상태로 신청 기록을 생성합니다.
+            const applicationResult = await db.query(
+                `INSERT INTO user_applications (user_id, program_id, status, admin_message)
+                 VALUES ($1, $2, 'assigned', $3)
+                 RETURNING id`,
+                [userId, program_id, admin_message || ''] // 맞춤 메시지는 없을 수도 있음
+            );
+            const newApplicationId = applicationResult.rows[0].id;
+
+            res.status(201).json({
+                success: true,
+                message: '프로그램이 성공적으로 할당되었습니다.',
+                application_id: newApplicationId
+            });
+        } catch (error) {
+            console.error('맞춤형 프로그램 할당 에러:', error);
+            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+        }
+    }
+);
+
+/**
+ * @api {get} /api/admin/applications/:applicationId/milestones
+ * @description [신규] 특정 신청 건에 대한 마일스톤 목록과 완료 여부를 조회하는 API
+ * @permission super_admin, vice_super_admin, user_manager
+ */
+router.get(
+    '/applications/:applicationId/milestones',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'user_manager']),
+    async (req, res) => {
+        const { applicationId } = req.params;
+        try {
+            // 프로그램의 모든 마일스톤을 가져오면서, 현재 신청 건에 대해 완료되었는지 여부를 LEFT JOIN으로 확인합니다.
+            const query = `
+                SELECT
+                    pm.id,
+                    pm.milestone_name,
+                    pm.score_value,
+                    pm.display_order,
+                    CASE WHEN ucm.id IS NOT NULL THEN true ELSE false END AS is_completed,
+                    ucm.completed_at
+                FROM program_milestones pm
+                LEFT JOIN user_milestone_completions ucm
+                    ON pm.id = ucm.milestone_id AND ucm.application_id = $1
+                WHERE pm.program_id = (SELECT program_id FROM user_applications WHERE id = $1)
+                ORDER BY pm.display_order;
+            `;
+            const { rows } = await db.query(query, [applicationId]);
+            res.status(200).json({ success: true, milestones: rows });
+        } catch (error) {
+            console.error('마일스톤 목록 조회 에러:', error);
+            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+        }
+    }
+);
+
+/**
+ * @api {post} /api/admin/applications/:applicationId/milestones/:milestoneId/complete
+ * @description [신규] 관리자가 특정 마일스톤을 '완료' 처리하는 API
+ * @permission super_admin, vice_super_admin, user_manager
+ */
+router.post(
+    '/applications/:applicationId/milestones/:milestoneId/complete',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'user_manager']),
+    async (req, res) => {
+        const { applicationId, milestoneId } = req.params;
+
+        try {
+            // user_id를 application_id를 통해 조회 (user_milestone_completions 테이블에 필요)
+            const appInfo = await db.query('SELECT user_id FROM user_applications WHERE id = $1', [applicationId]);
+            if (appInfo.rows.length === 0) {
+                return res.status(404).json({ success: false, message: '신청 내역을 찾을 수 없습니다.' });
+            }
+            const userId = appInfo.rows[0].user_id;
+
+            // 이미 완료되었는지 중복 확인
+            const checkResult = await db.query(
+                'SELECT id FROM user_milestone_completions WHERE application_id = $1 AND milestone_id = $2',
+                [applicationId, milestoneId]
+            );
+
+            if (checkResult.rows.length > 0) {
+                return res.status(409).json({ success: false, message: '이미 완료 처리된 마일스톤입니다.' });
+            }
+
+            // user_milestone_completions 테이블에 완료 기록 추가
+            await db.query(
+                'INSERT INTO user_milestone_completions (user_id, application_id, milestone_id) VALUES ($1, $2, $3)',
+                [userId, applicationId, milestoneId]
+            );
+
+            res.status(201).json({ success: true, message: '마일스톤을 완료 처리했습니다.' });
+        } catch (error) {
+            console.error('마일스톤 완료 처리 에러:', error);
+            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+        }
+    }
+);
 
 module.exports = router;
