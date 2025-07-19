@@ -325,15 +325,23 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         const diagnosis = diagRes.rows[0];
         
         // ★★★ [핵심 수정] E, S, G 각 카테고리별 "메인 질문"의 개수만 정확히 계산 ★★★
-        const questionCounts = { e: 0, s: 0, g: 0 };
-        questionsRes.rows.forEach(q => {
-            if (!q.question_code.includes('_')) { // '_'가 없는 질문만 카운트
-                const category = (q.esg_category || '').toLowerCase();
-                if (questionCounts[category] !== undefined) {
-                    questionCounts[category]++;
-                }
+        const answeredQuestionsRes = await client.query('SELECT question_code FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosis.id]);
+        const questionsMap = new Map(questionsRes.rows.map(q => [q.question_code, q.esg_category]));
+        const mainQuestionsAnswered = { e: new Set(), s: new Set(), g: new Set() };
+
+        answeredQuestionsRes.rows.forEach(ans => {
+            const category = (questionsMap.get(ans.question_code) || '').toLowerCase();
+            if (mainQuestionsAnswered[category]) {
+                const mainQuestionCode = ans.question_code.split('_')[0]; // SQ1_1 -> SQ1
+                mainQuestionsAnswered[category].add(mainQuestionCode);
             }
         });
+
+        const questionCounts = {
+            e: mainQuestionsAnswered.e.size,
+            s: mainQuestionsAnswered.s.size,
+            g: mainQuestionsAnswered.g.size
+        };
 
         const initialScores = {
             e: parseFloat(diagnosis.e_score) || 0,
@@ -378,6 +386,7 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
         });
         realtimeScores.total = (realtimeScores.e + realtimeScores.s + realtimeScores.g) / 3;
         
+        // ★★★ [핵심 수정] 프론트엔드에 표시될 "개선 점수"는 평균 점수의 차이로 계산 ★★★
         const finalImprovementScores = {
             e: realtimeScores.e - initialScores.e,
             s: realtimeScores.s - initialScores.s,
