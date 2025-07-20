@@ -3127,7 +3127,7 @@ router.post(
     '/applications/:applicationId/milestones/batch-update',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
-    upload.any(),
+    upload.any(), // 이미지와 문서를 모두 받기 위해 .any() 사용
     async (req, res) => {
         const { applicationId } = req.params;
         const { milestonesData } = req.body;
@@ -3137,39 +3137,68 @@ router.post(
             await client.query('BEGIN');
 
             const receivedMilestones = JSON.parse(milestonesData);
-            const existingMilestonesRes = await client.query('SELECT id, attachment_url FROM application_milestones WHERE application_id = $1', [applicationId]);
-            const existingMilestonesMap = new Map(existingMilestonesRes.rows.map(m => [m.id, m.attachment_url]));
+            // ✅ 1. DB에서 기존 이미지와 첨부파일 URL을 모두 가져옵니다.
+            const existingMilestonesRes = await client.query('SELECT id, image_url, attachment_url FROM application_milestones WHERE application_id = $1', [applicationId]);
+            const existingMilestonesMap = new Map(existingMilestonesRes.rows.map(m => [m.id, { imageUrl: m.image_url, attachmentUrl: m.attachment_url }]));
+            
             const receivedMilestoneIds = new Set();
 
             for (const milestone of receivedMilestones) {
+                // ✅ 2. 이미지와 첨부파일 URL을 각각의 변수로 관리합니다.
+                let imageUrl = milestone.image_url || null;
                 let attachmentUrl = milestone.attachment_url || null;
-                if (milestone.filePlaceholder) {
-                    const file = req.files.find(f => f.fieldname === milestone.filePlaceholder);
-                    if (file) {
-                        if (milestone.id !== 'new' && existingMilestonesMap.has(milestone.id)) {
-                            const oldUrl = existingMilestonesMap.get(milestone.id);
-                            if(oldUrl) await deleteImageFromS3(oldUrl);
-                        }
-                        attachmentUrl = await uploadImageToS3(file.buffer, file.originalname, 'milestones', req.user.userId);
+
+                // ✅ 3. 이미지 파일 처리 로직 (새로운 부분)
+                if (milestone.imagePlaceholder) {
+                    const imageFile = req.files.find(f => f.fieldname === milestone.imagePlaceholder);
+                    if (imageFile) {
+                        // 기존 이미지가 있으면 S3에서 삭제
+                        const oldData = existingMilestonesMap.get(milestone.id);
+                        if (oldData && oldData.imageUrl) await deleteImageFromS3(oldData.imageUrl);
+                        // 새 이미지 업로드
+                        imageUrl = await uploadImageToS3(imageFile.buffer, imageFile.originalname, 'milestones/images', req.user.userId);
+                    }
+                }
+
+                // ✅ 4. 첨부 문서 처리 로직 (기존 로직과 유사)
+                if (milestone.attachmentPlaceholder) {
+                    const attachmentFile = req.files.find(f => f.fieldname === milestone.attachmentPlaceholder);
+                    if (attachmentFile) {
+                        // 기존 문서가 있으면 S3에서 삭제
+                        const oldData = existingMilestonesMap.get(milestone.id);
+                        if (oldData && oldData.attachmentUrl) await deleteImageFromS3(oldData.attachmentUrl);
+                        // 새 문서 업로드
+                        attachmentUrl = await uploadImageToS3(attachmentFile.buffer, attachmentFile.originalname, 'milestones/attachments', req.user.userId);
                     }
                 }
 
                 if (milestone.id === 'new') {
-                    // ★★★ [핵심 수정] INSERT 쿼리에 improvement_category 추가 ★★★
-                    const query = `INSERT INTO application_milestones (application_id, milestone_name, score_value, improvement_category, content, display_order, attachment_url) VALUES ($1, $2, $3, $4, $5, $6, $7)`;
-                    await client.query(query, [applicationId, milestone.milestone_name, milestone.score_value, milestone.improvement_category, milestone.content, milestone.display_order, attachmentUrl]);
+                    // ✅ 5. INSERT 쿼리에 image_url 추가
+                    const query = `
+                        INSERT INTO application_milestones 
+                        (application_id, milestone_name, score_value, improvement_category, content, display_order, image_url, attachment_url) 
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    `;
+                    await client.query(query, [applicationId, milestone.milestone_name, milestone.score_value, milestone.improvement_category, milestone.content, milestone.display_order, imageUrl, attachmentUrl]);
                 } else {
                     const milestoneId = parseInt(milestone.id, 10);
                     receivedMilestoneIds.add(milestoneId);
-                    // ★★★ [핵심 수정] UPDATE 쿼리에 improvement_category 추가 ★★★
-                    const query = `UPDATE application_milestones SET milestone_name=$1, score_value=$2, improvement_category=$3, content=$4, display_order=$5, attachment_url=$6, updated_at=NOW() WHERE id=$7`;
-                    await client.query(query, [milestone.milestone_name, milestone.score_value, milestone.improvement_category, milestone.content, milestone.display_order, attachmentUrl, milestoneId]);
+                    
+                    // ✅ 6. UPDATE 쿼리에 image_url 추가
+                    const query = `
+                        UPDATE application_milestones 
+                        SET milestone_name=$1, score_value=$2, improvement_category=$3, content=$4, display_order=$5, image_url=$6, attachment_url=$7, updated_at=NOW() 
+                        WHERE id=$8
+                    `;
+                    await client.query(query, [milestone.milestone_name, milestone.score_value, milestone.improvement_category, milestone.content, milestone.display_order, imageUrl, attachmentUrl, milestoneId]);
                 }
             }
             
-            for (const [existingId, existingUrl] of existingMilestonesMap.entries()) {
+            // ✅ 7. 삭제된 마일스톤의 파일들도 S3에서 제거
+            for (const [existingId, existingUrls] of existingMilestonesMap.entries()) {
                 if (!receivedMilestoneIds.has(existingId)) {
-                    if (existingUrl) await deleteImageFromS3(existingUrl);
+                    if (existingUrls.imageUrl) await deleteImageFromS3(existingUrls.imageUrl);
+                    if (existingUrls.attachmentUrl) await deleteImageFromS3(existingUrls.attachmentUrl);
                     await client.query('DELETE FROM application_milestones WHERE id = $1', [existingId]);
                 }
             }
@@ -3186,8 +3215,5 @@ router.post(
         }
     }
 );
-
-
-// (파일 업로드, 수정, 삭제 API는 다음 단계에서 추가...)
 
 module.exports = router;
