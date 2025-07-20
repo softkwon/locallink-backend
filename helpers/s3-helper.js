@@ -95,4 +95,4 @@ async function deleteImageFromS3(fileUrl) {
     }
 }
 
-module.exports = { uploadImageToS3, deleteImageFromS3 };
+module.exports = { uploadImageToS3, uploadFileToS3, deleteImageFromS3 };
