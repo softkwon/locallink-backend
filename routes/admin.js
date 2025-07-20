@@ -8,7 +8,7 @@ const sharp = require('sharp'); // ★★★ sharp 라이브러리 불러오기 
 const db = require('../db');
 const authMiddleware = require('../middleware/authMiddleware');
 const checkPermission = require('../middleware/permissionMiddleware'); // 새로 만든 권한 미들웨어
-const { uploadImageToS3, deleteImageFromS3 } = require('../helpers/s3-helper');
+const { uploadImageToS3, uploadFileToS3, deleteImageFromS3 } = require('../helpers/s3-helper');
 const router = express.Router();
 
 // S3 기본 URL. 실제 환경에서는 process.env.STATIC_BASE_URL 등을 사용하세요.
