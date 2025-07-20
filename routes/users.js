@@ -396,7 +396,13 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
 
         res.status(200).json({
             success: true,
-            dashboard: { initialScores, improvementScores: finalImprovementScores, realtimeScores, programs: programsRes.rows }
+            dashboard: { 
+                initialScores, 
+                improvementScores: finalImprovementScores, 
+                realtimeScores, 
+                rawTotalScores: initialTotalScores, 
+                programs: programsRes.rows 
+            }
         });
 
     } catch (error) {
