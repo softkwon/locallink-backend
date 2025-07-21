@@ -3221,11 +3221,11 @@ router.post(
  * @description 모든 규제 정보 목록을 조회합니다.
  */
 router.get(
-    '/regulations', // '/admin'이 없는 경로
-    authMiddleware, // 로그인은 필요
+    '/regulations', // '/admin'이 없는 사용자용 경로
+    authMiddleware, // 로그인은 필요하지만, 특정 권한은 체크하지 않음
     async (req, res) => {
         try {
-            // 시행일이 빠른 순서로 정렬
+            // 시행일이 빠른 순서로 정렬하여 모든 규제를 반환
             const { rows } = await db.query('SELECT * FROM regulations ORDER BY effective_date ASC');
             res.status(200).json({ success: true, regulations: rows });
         } catch (error) {
