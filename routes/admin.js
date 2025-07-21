@@ -3212,4 +3212,103 @@ router.post(
     }
 );
 
+// =================================================================
+// ▼▼▼ 규제 타임라인 관리 API (신규 추가) ▼▼▼
+// =================================================================
+
+/**
+ * @api {get} /api/admin/regulations
+ * @description 모든 규제 정보 목록을 조회합니다.
+ */
+router.get(
+    '/regulations',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        try {
+            const { rows } = await db.query('SELECT * FROM regulations ORDER BY effective_date ASC');
+            res.status(200).json({ success: true, regulations: rows });
+        } catch (error) {
+            console.error("규제 정보 조회 에러:", error);
+            res.status(500).json({ success: false, message: '서버 오류' });
+        }
+    }
+);
+
+/**
+ * @api {post} /api/admin/regulations
+ * @description 새로운 규제 정보를 추가합니다.
+ */
+router.post(
+    '/regulations',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        const { regulation_name, effective_date, description, target_sizes, link_url, sanctions, countermeasures } = req.body;
+        try {
+            const query = `
+                INSERT INTO regulations (regulation_name, effective_date, description, target_sizes, link_url, sanctions, countermeasures)
+                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`;
+            const { rows } = await db.query(query, [regulation_name, effective_date, description, target_sizes, link_url, sanctions, countermeasures]);
+            res.status(201).json({ success: true, message: '규제 정보가 추가되었습니다.', regulation: rows[0] });
+        } catch (error) {
+            console.error("규제 정보 추가 에러:", error);
+            res.status(500).json({ success: false, message: '서버 오류' });
+        }
+    }
+);
+
+/**
+ * @api {put} /api/admin/regulations/:id
+ * @description 특정 규제 정보를 수정합니다.
+ */
+router.put(
+    '/regulations/:id',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        const { id } = req.params;
+        const { regulation_name, effective_date, description, target_sizes, link_url, sanctions, countermeasures } = req.body;
+        try {
+            const query = `
+                UPDATE regulations SET
+                    regulation_name = $1, effective_date = $2, description = $3,
+                    target_sizes = $4, link_url = $5, sanctions = $6, countermeasures = $7, updated_at = NOW()
+                WHERE id = $8 RETURNING *`;
+            const { rows } = await db.query(query, [regulation_name, effective_date, description, target_sizes, link_url, sanctions, countermeasures, id]);
+            if (rows.length === 0) {
+                return res.status(404).json({ success: false, message: '규제 정보를 찾을 수 없습니다.' });
+            }
+            res.status(200).json({ success: true, message: '규제 정보가 수정되었습니다.', regulation: rows[0] });
+        } catch (error) {
+            console.error("규제 정보 수정 에러:", error);
+            res.status(500).json({ success: false, message: '서버 오류' });
+        }
+    }
+);
+
+/**
+ * @api {delete} /api/admin/regulations/:id
+ * @description 특정 규제 정보를 삭제합니다.
+ */
+router.delete(
+    '/regulations/:id',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        const { id } = req.params;
+        try {
+            const { rowCount } = await db.query('DELETE FROM regulations WHERE id = $1', [id]);
+            if (rowCount === 0) {
+                return res.status(404).json({ success: false, message: '규제 정보를 찾을 수 없습니다.' });
+            }
+            res.status(200).json({ success: true, message: '규제 정보가 삭제되었습니다.' });
+        } catch (error) {
+            console.error("규제 정보 삭제 에러:", error);
+            res.status(500).json({ success: false, message: '서버 오류' });
+        }
+    }
+);
+
+
 module.exports = router;
