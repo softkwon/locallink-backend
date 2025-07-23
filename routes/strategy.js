@@ -49,14 +49,13 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
             questionsRes, 
             strategyRulesRes,
             industryAverageRes,
-            companySizeIssuesRes
+            companySizeIssuesRes,
+            solutionCategoriesRes
         ] = await Promise.all([
             client.query('SELECT * FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosisId]),
             client.query('SELECT * FROM industry_benchmark_scores WHERE industry_code = $1', [industryCode]),
             client.query('SELECT * FROM industry_esg_issues WHERE industry_code = $1', [industryCode]),
             client.query('SELECT * FROM regional_esg_issues WHERE region = $1 ORDER BY esg_category', [region]),
-            
-            // ▼▼▼ [핵심 수정] 프로그램 조회 시, 솔루션 카테고리 정보를 JOIN하여 함께 가져옵니다. ▼▼▼
             client.query(`
                 SELECT p.*, COALESCE(sc.categories, '[]'::json) as solution_categories
                 FROM esg_programs p
@@ -68,12 +67,11 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
                 ) sc ON p.id = sc.program_id
                 WHERE p.status = 'published'
             `),
-            // ▲▲▲ [핵심 수정] 여기까지 입니다. ▲▲▲
-
             client.query("SELECT question_code, question_text FROM survey_questions WHERE diagnosis_type = 'simple'"),
             client.query('SELECT * FROM strategy_rules'),
             client.query('SELECT * FROM industry_averages WHERE industry_code = $1', [industryCode]),
-            client.query('SELECT * FROM company_size_esg_issues WHERE company_size = $1', [companySizeKey])
+            client.query('SELECT * FROM company_size_esg_issues WHERE company_size = $1', [companySizeKey]),
+            client.query('SELECT * FROM solution_categories')
         ]);
         
         const userAnswers = answersRes.rows;
@@ -166,7 +164,8 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
                 recommendedPrograms: recommendedPrograms, // 이 배열에 카테고리 정보가 포함됩니다.
                 industryAverageData: industryAverageData,
                 aiAnalysis: aiAnalysisData,
-                companySizeIssue: companySizeIssuesRes.rows[0] || null
+                companySizeIssue: companySizeIssuesRes.rows[0] || null,
+                allSolutionCategories: solutionCategoriesRes.rows
             }
         });
 

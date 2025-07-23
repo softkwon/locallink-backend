@@ -2976,4 +2976,40 @@ router.delete(
     }
 );
 
+router.get(
+    '/solution-categories',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        try {
+            const { rows } = await db.query('SELECT * FROM solution_categories ORDER BY parent_category, id');
+            res.status(200).json({ success: true, categories: rows });
+        } catch (error) {
+            console.error("솔루션 카테고리 조회 에러:", error);
+            res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+        }
+    }
+);
+
+router.put(
+    '/solution-categories/:id',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    async (req, res) => {
+        const { id } = req.params;
+        const { description } = req.body; 
+        try {
+            const query = 'UPDATE solution_categories SET description = $1 WHERE id = $2 RETURNING *';
+            const { rows } = await db.query(query, [description, id]);
+            if (rows.length === 0) {
+                return res.status(404).json({ success: false, message: '해당 카테고리를 찾을 수 없습니다.' });
+            }
+            res.status(200).json({ success: true, message: '카테고리 설명이 수정되었습니다.', category: rows[0] });
+        } catch (error) {
+            console.error("솔루션 카테고리 수정 에러:", error);
+            res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+        }
+    }
+);
+
 module.exports = router;
