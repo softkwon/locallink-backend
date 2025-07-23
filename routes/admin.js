@@ -1,63 +1,45 @@
 // routes/admin.js
 const express = require('express');
-const { stringify } = require('csv-stringify/sync'); // ★★★ csv-stringify 불러오기 ★★★
-const { parse } = require('csv-parse/sync'); // 파일 상단에 csv-parse/sync 추가
-const stream = require('stream');  // ★★★ stream 불러오기 ★★★
-const multer = require('multer'); // ★★★ multer 불러오기 ★★★
-const sharp = require('sharp'); // ★★★ sharp 라이브러리 불러오기 ★★★
+const { stringify } = require('csv-stringify/sync'); 
+const { parse } = require('csv-parse/sync'); 
+const stream = require('stream');  
+const multer = require('multer'); 
+const sharp = require('sharp'); 
 const db = require('../db');
 const authMiddleware = require('../middleware/authMiddleware');
-const checkPermission = require('../middleware/permissionMiddleware'); // 새로 만든 권한 미들웨어
+const checkPermission = require('../middleware/permissionMiddleware');
 const { uploadImageToS3, uploadFileToS3, deleteImageFromS3 } = require('../helpers/s3-helper');
 const router = express.Router();
 
-// S3 기본 URL. 실제 환경에서는 process.env.STATIC_BASE_URL 등을 사용하세요.
 const STATIC_BASE_URL = 'https://locallink-backend.onrender.com';
 
-/**
- * 프로그램 content 데이터 안의 모든 상대 이미지 경로를 전체 URL로 변환하는 함수
- * @param {object} program - DB에서 가져온 프로그램 데이터 한 줄
- * @returns {object} - 이미지 경로가 변환된 프로그램 객체
- */
+
 const convertProgramContentUrls = (program) => {
-    // 프로그램 데이터나 content가 없으면 원본 그대로 반환
     if (!program || !program.content) {
         return program;
     }
 
-    // 원본 객체를 복사하여 새 객체 생성 (원본 데이터 보호)
     const newProgram = { ...program };
-    // content 필드가 JSON 문자열일 경우 자바스크립트 객체로 변환
     const content = (typeof newProgram.content === 'string') ? JSON.parse(newProgram.content) : newProgram.content;
 
-    // content가 배열 형태일 때만 내부 로직 실행
     if (Array.isArray(content)) {
         content.forEach(section => {
-            // 섹션에 images 배열이 있는지 확인
             if (section.images && Array.isArray(section.images)) {
-                // 각 이미지 경로를 전체 URL로 변환
                 section.images = section.images.map(path => {
-                    // 경로가 있고, http로 시작하지 않는 상대 경로인 경우에만
                     if (path && !path.startsWith('http')) {
                         return `${STATIC_BASE_URL}/${path}`;
                     }
-                    // 이미 전체 URL이거나 경로가 없으면 그대로 둠
                     return path;
                 });
             }
         });
     }
     
-    // 변환된 content를 다시 할당하고 새로운 program 객체를 반환
     newProgram.content = content;
     return newProgram;
 };
 
-/**
- * site_content 데이터 안의 이미지 객체 경로를 전체 URL로 변환하는 함수
- * @param {object | string} contentValue - DB에서 가져온 content_value 데이터
- * @returns {object} - 이미지 경로가 변환된 content 객체
- */
+
 const convertSiteContentImageUrls = (contentValue) => {
     if (!contentValue) {
         return contentValue;
@@ -68,7 +50,6 @@ const convertSiteContentImageUrls = (contentValue) => {
         sections.forEach(section => {
             if (section.images && Array.isArray(section.images)) {
                 section.images.forEach(imageObj => {
-                    // imageObj가 존재하고, file 속성이 있으며, http로 시작하지 않을 때
                     if (imageObj && imageObj.file && !imageObj.file.startsWith('http')) {
                         imageObj.file = `${process.env.STATIC_BASE_URL}/${imageObj.file}`;
                     }
@@ -79,34 +60,27 @@ const convertSiteContentImageUrls = (contentValue) => {
     return sections;
 };
 
-//지워도 된다는 함수들 체크필요//
-const fs = require('fs'); // ★★★ 파일 시스템 모듈 불러오기 ★★★
-const path = require('path');   // ★★★ path 불러오기 ★★★
+const fs = require('fs'); 
+const path = require('path');   
 
-/**
- * 프로그램 데이터의 모든 JSON 필드를 파싱하고, 이미지 경로를 전체 URL로 변환하는 통합 함수
- * @param {object} program - DB에서 가져온 프로그램 데이터 한 줄
- * @returns {object} - 모든 경로와 JSON이 처리된 프로그램 객체
- */
+
 const processProgramData = (program) => {
     if (!program) return program;
 
     const newProgram = { ...program };
     const jsonFields = ['content', 'economic_effects', 'related_links', 'opportunity_effects'];
 
-    // 1. 문자열 상태인 JSON 필드를 모두 실제 객체/배열로 변환
     jsonFields.forEach(field => {
         if (newProgram[field] && typeof newProgram[field] === 'string') {
             try {
                 newProgram[field] = JSON.parse(newProgram[field]);
             } catch (e) {
                 console.error(`Error parsing JSON for field ${field}:`, e);
-                newProgram[field] = []; // 파싱 오류 시 빈 배열로 초기화
+                newProgram[field] = []; 
             }
         }
     });
 
-    // 2. content 안의 이미지 경로를 전체 URL로 변환
     if (newProgram.content && Array.isArray(newProgram.content)) {
         newProgram.content.forEach(section => {
             if (section.images && Array.isArray(section.images)) {
@@ -123,17 +97,15 @@ const processProgramData = (program) => {
     return newProgram;
 };
 
-// --- ▼▼▼ 파일 업로드 설정을 '메모리 저장소' 하나로 통일합니다. ▼▼▼ ---
-const storage = multer.memoryStorage(); // 파일을 디스크가 아닌 메모리에 버퍼 형태로 저장
+const storage = multer.memoryStorage(); 
 const upload = multer({ 
     storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 } // 5MB 용량 제한
+    limits: { fileSize: 5 * 1024 * 1024 } 
 });
 
-// ★★★ 협력사 로고용 저장소 설정 추가 ★★★
 const partnerStorage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, 'public/uploads/partners/'); // 저장 경로
+        cb(null, 'public/uploads/partners/'); 
     },
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -142,20 +114,12 @@ const partnerStorage = multer.diskStorage({
 });
 const uploadPartner = multer({ storage: partnerStorage, limits: { fileSize: 5 * 1024 * 1024 } });
 
-
-/**
- * 파일명: routes/admin.js
- * 수정 위치: GET /api/admin/users
- * 수정 일시: 2025-07-06 09:00
- */
-// GET /api/admin/users - 모든 사용자 목록 조회 (레벨 계산 로직 추가)
 router.get(
     '/users',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', 'user_manager']),
     async (req, res) => {
         try {
-            // ★★★ 1. 사용자의 레벨 계산에 필요한 모든 데이터를 가져오는 쿼리로 수정 ★★★
             const query = `
                 SELECT 
                     u.id, u.email, u.company_name, u.manager_name, u.manager_phone, u.role, u.created_at,
@@ -177,7 +141,6 @@ router.get(
             `;
             const { rows } = await db.query(query);
 
-            // ★★★ 2. 각 사용자의 레벨을 계산하여 데이터에 추가합니다. ★★★
             const usersWithLevel = rows.map(user => {
                 let level = 1;
                 if (user.has_completed_diagnosis) level = 2;
@@ -186,7 +149,6 @@ router.get(
                     if (user.highest_application_status === '진행') level = 4;
                     if (user.highest_application_status === '완료') level = 5;
                 }
-                // 기존 user 객체에 level 정보를 추가하여 반환
                 return { ...user, level: level };
             });
 
@@ -199,7 +161,6 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 역할 변경 API 추가 (최고 관리자 전용) ▼▼▼ ---
 router.put(
     '/users/:userId/role',
     authMiddleware,
@@ -208,13 +169,11 @@ router.put(
         const { userId } = req.params;
         const { role } = req.body;
 
-        // ★★★ 여기에 'vice_super_admin'을 추가합니다. ★★★
         const allowedRoles = ['user', 'content_manager', 'user_manager', 'vice_super_admin', 'super_admin'];
         if (!role || !allowedRoles.includes(role)) {
             return res.status(400).json({ success: false, message: '유효하지 않은 역할입니다.' });
         }
         
-        // 부관리자가 super_admin을 건드리지 못하게 하는 방어 로직
         if (req.user.role === 'vice_super_admin') {
             if (role === 'super_admin') {
                 return res.status(403).json({ success: false, message: 'super_admin으로 역할을 지정할 수 없습니다.' });
@@ -242,14 +201,13 @@ router.put(
     }
 );
 
-// --- ▼▼▼ 사용자 삭제 API 추가 (최고 관리자 전용) ▼▼▼ ---
 router.delete(
     '/users/:userId',
     authMiddleware,
     checkPermission(['super_admin']),
     async (req, res) => {
-        const { userId: targetUserId } = req.params; // 삭제 대상 ID
-        const currentUserId = req.user.userId; // 현재 로그인된 관리자 ID
+        const { userId: targetUserId } = req.params;
+        const currentUserId = req.user.userId;
 
         if (parseInt(targetUserId, 10) === currentUserId) {
             return res.status(400).json({ success: false, message: '자기 자신을 삭제할 수 없습니다.' });
@@ -265,10 +223,8 @@ router.delete(
     }
 );
 
-// GET /api/admin/users/export - 모든 사용자 정보 CSV로 내보내기
 router.get('/users/export', authMiddleware, checkPermission(['super_admin', 'vice_super_admin',  'user_manager']), async (req, res) => {
     try {
-        // 내보낼 데이터에 맞게 컬럼을 선택하고, 한글 별칭을 부여합니다.
         const query = `
             SELECT 
                 id as "ID",
@@ -292,7 +248,6 @@ router.get('/users/export', authMiddleware, checkPermission(['super_admin', 'vic
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="users-list-${new Date().toISOString().slice(0,10)}.csv"`);
         
-        // 엑셀에서 한글이 깨지지 않도록 BOM 추가
         res.status(200).end('\uFEFF' + csvString);
 
     } catch (error) {
@@ -301,8 +256,6 @@ router.get('/users/export', authMiddleware, checkPermission(['super_admin', 'vic
     }
 });
 
-// --- ▼▼▼ 문의 관리 API 추가 ▼▼▼ ---
-// GET /api/admin/inquiries - 모든 문의 조회
 router.get('/inquiries', authMiddleware, checkPermission(['super_admin','vice_super_admin', 'user_manager']), async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM inquiries ORDER BY created_at DESC');
@@ -310,21 +263,15 @@ router.get('/inquiries', authMiddleware, checkPermission(['super_admin','vice_su
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-/**
- * 파일명: routes/admin.js
- * 수정 위치: PUT /api/admin/inquiries/:id/status
- * 수정 일시: 2025-07-07 00:18
- */
-// PUT /api/admin/inquiries/:id/status - 문의 상태 변경 (+답변 시 알림 추가)
+
 router.put('/inquiries/:id/status', authMiddleware, checkPermission(['super_admin', 'vice_super_admin',  'user_manager']), async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body; // ★★★ reply 필드를 받지 않도록 수정 ★★★
+    const { status } = req.body; 
 
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
 
-        // ★★★ 존재하지 않는 reply, replied_at 컬럼을 제거한 최종 쿼리 ★★★
         const updateQuery = 'UPDATE inquiries SET status = $1 WHERE id = $2 RETURNING user_id, inquiry_type';
         const result = await client.query(updateQuery, [status, id]);
 
@@ -332,7 +279,6 @@ router.put('/inquiries/:id/status', authMiddleware, checkPermission(['super_admi
             throw new Error('문의를 찾을 수 없습니다.');
         }
 
-        // 'resolved' 또는 'in_progress' 등 상태가 변경될 때마다 알림 생성
         const inquiry = result.rows[0];
         const message = `문의하신 '[${inquiry.inquiry_type}]'의 처리 상태가 [${status}](으)로 변경되었습니다.`;
         const link_url = '/mypage_inquiry.html';
@@ -354,7 +300,6 @@ router.put('/inquiries/:id/status', authMiddleware, checkPermission(['super_admi
     }
 });
 
-// DELETE /api/admin/inquiries/:id - 문의 삭제
 router.delete('/inquiries/:id', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     const { id } = req.params;
     try {
@@ -364,11 +309,9 @@ router.delete('/inquiries/:id', authMiddleware, checkPermission(['super_admin'])
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// --- ▼▼▼ 문의 관리 API (탭 필터링, Export 기능 추가) ▼▼▼ ---
-// GET /api/admin/inquiries - 모든 문의 조회 (타입별 필터링 추가)
-// GET /api/admin/inquiries - 모든 문의 조회
+
 router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
-    const { type } = req.query; // 탭 필터링을 위한 타입
+    const { type } = req.query; 
     try {
         let query = 'SELECT * FROM inquiries';
         const values = [];
@@ -382,7 +325,6 @@ router.get('/inquiries', authMiddleware, checkPermission(['super_admin', 'vice_s
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// GET /api/admin/inquiries/export - 문의 내역 Export
 router.get('/inquiries/export', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM inquiries ORDER BY created_at DESC');
@@ -394,7 +336,6 @@ router.get('/inquiries/export', authMiddleware, checkPermission(['super_admin', 
 });
 
 
-// --- ▼▼▼ 모든 질문 목록 조회 API 추가 (최고 관리자, 콘텐츠 관리자 전용) ▼▼▼ ---
 router.get(
     '/questions',
     authMiddleware,
@@ -411,7 +352,6 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 특정 질문 정보 조회 API 추가 (관리자 전용) ▼▼▼ ---
 router.get(
     '/questions/:id',
     authMiddleware,
@@ -433,7 +373,6 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 특정 질문 수정 API 추가 ▼▼▼ ---
 router.put(
     '/questions/:id',
     authMiddleware,
@@ -471,7 +410,6 @@ router.put(
     }
 );
 
-// --- ▼▼▼ 모든 채점 규칙 조회 API 추가 (최고 관리자 전용) ▼▼▼ ---
 router.get(
     '/scoring-rules',
     authMiddleware,
@@ -479,7 +417,6 @@ router.get(
     async (req, res) => {
         const { type } = req.query;
         try {
-            // ★★★ JOIN 구문을 추가하여 survey_questions의 question_text를 함께 가져옵니다. ★★★
             let query = `
                 SELECT 
                     r.id, 
@@ -508,7 +445,6 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 특정 채점 규칙 수정 API 추가 (최고 관리자, 콘텐츠 관리자 전용) ▼▼▼ ---
 router.put(
     '/scoring-rules/:id',
     authMiddleware,
@@ -536,7 +472,6 @@ router.put(
     }
 );
 
-// --- ▼▼▼ 특정 질문 삭제 API 추가 (최고 관리자 전용) ▼▼▼ ---
 router.delete(
     '/questions/:id',
     authMiddleware,
@@ -544,12 +479,9 @@ router.delete(
     async (req, res) => {
         try {
             const { id } = req.params;
-            // 중요: 이 질문을 사용하는 다른 데이터(답변, 채점규칙 등)와의 관계를 고려해야 합니다.
-            // 지금은 먼저 답변과 채점 규칙에서 해당 질문을 참조하는 데이터를 삭제합니다.
             await db.query('DELETE FROM diagnosis_answers WHERE question_code = (SELECT question_code FROM survey_questions WHERE id = $1)', [id]);
             await db.query('DELETE FROM scoring_rules WHERE question_code = (SELECT question_code FROM survey_questions WHERE id = $1)', [id]);
             
-            // 그 다음 질문 자체를 삭제합니다.
             const { rowCount } = await db.query('DELETE FROM survey_questions WHERE id = $1', [id]);
 
             if (rowCount === 0) {
@@ -564,13 +496,11 @@ router.delete(
     }
 );
 
-// --- ▼▼▼ 신규 질문 및 채점 규칙 동시 생성 API 추가 ▼▼▼ ---
 router.post(
     '/questions',
     authMiddleware,
-    checkPermission(['super_admin', 'vice_super_admin']), // 권한을 content_manager도 포함하도록 수정
+    checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
-        // ★★★ 1. req.body에서 scoring_method를 명확하게 받아옵니다. ★★★
         const { 
             question_code, esg_category, question_text, question_type, 
             options, explanation, display_order, 
@@ -582,7 +512,6 @@ router.post(
         try {
             await client.query('BEGIN');
 
-            // ★★★ 2. INSERT 쿼리에 scoring_method 컬럼을 추가합니다. ★★★
             const questionQuery = `
                 INSERT INTO survey_questions (
                     question_code, esg_category, question_text, question_type, 
@@ -599,12 +528,11 @@ router.post(
             ];
             await client.query(questionQuery, questionValues);
 
-            // '채점 방식'에 따라 다른 기본 채점 규칙을 생성합니다.
             if (scoring_method === 'benchmark_comparison' && benchmark_metric) {
                 const ruleQuery = `INSERT INTO scoring_rules (question_code, answer_condition, score, esg_category) VALUES ($1, $2, $3, $4);`;
                 const benchmarkCommand = `BENCHMARK_${benchmark_metric.replace('_avg', '').toUpperCase()}`;
                 await client.query(ruleQuery, [question_code, '*', benchmarkCommand, esg_category]);
-            } else { // 'direct_score' 방식일 경우
+            } else { 
                 if (options && options.length > 0) {
                     for (const option of options) {
                         if (option.value) {
@@ -627,40 +555,32 @@ router.post(
     }
 );
 
-// --- ▼▼▼ 질문 순서 변경 API 추가 ▼▼▼ ---
 router.post(
     '/questions/reorder',
     authMiddleware,
     checkPermission(['super_admin']),
     async (req, res) => {
-        const { questionId, direction } = req.body; // questionId: 이동할 질문의 id, direction: 'up' 또는 'down'
+        const { questionId, direction } = req.body;
 
         const client = await db.pool.connect();
         try {
             await client.query('BEGIN');
 
-            // 1. 현재 질문의 순서(display_order)를 가져옵니다.
             const currentQRes = await client.query('SELECT display_order FROM survey_questions WHERE id = $1', [questionId]);
             if (currentQRes.rows.length === 0) throw new Error('해당 질문을 찾을 수 없습니다.');
             const currentOrder = currentQRes.rows[0].display_order;
 
             let otherQRes;
-            // 2. 바꿀 대상 질문(otherQ)을 찾습니다.
             if (direction === 'up') {
-                // 현재 순서보다 작은 것들 중 가장 큰 것을 찾습니다 (바로 위 질문)
                 otherQRes = await client.query('SELECT id, display_order FROM survey_questions WHERE display_order < $1 ORDER BY display_order DESC LIMIT 1', [currentOrder]);
-            } else { // direction === 'down'
-                // 현재 순서보다 큰 것들 중 가장 작은 것을 찾습니다 (바로 아래 질문)
+            } else { 
                 otherQRes = await client.query('SELECT id, display_order FROM survey_questions WHERE display_order > $1 ORDER BY display_order ASC LIMIT 1', [currentOrder]);
             }
             
-            // 3. 바꿀 대상이 있으면, 두 질문의 display_order 값을 서로 맞바꿉니다.
             if (otherQRes.rows.length > 0) {
                 const otherQuestion = otherQRes.rows[0];
                 
-                // 현재 질문의 순서를 위/아래 질문의 순서로 변경
                 await client.query('UPDATE survey_questions SET display_order = $1 WHERE id = $2', [otherQuestion.display_order, questionId]);
-                // 위/아래 질문의 순서를 현재 질문의 원래 순서로 변경
                 await client.query('UPDATE survey_questions SET display_order = $1 WHERE id = $2', [currentOrder, otherQuestion.id]);
             }
             
@@ -677,14 +597,12 @@ router.post(
     }
 );
 
-// --- ▼▼▼ 벤치마크 지표 목록 조회 API 추가 ▼▼▼ ---
 router.get(
     '/average-metrics',
     authMiddleware,
     checkPermission(['super_admin']),
     async (req, res) => {
         try {
-            // information_schema.columns는 DB의 테이블 구조(메타데이터)를 조회하는 표준 방식입니다.
             const query = `
                 SELECT column_name 
                 FROM information_schema.columns
@@ -692,7 +610,6 @@ router.get(
                   AND column_name LIKE '%_avg';
             `;
             const { rows } = await db.query(query);
-            // ['ghg_emissions_avg', 'energy_usage_avg', ...] 와 같은 배열로 변환
             const metrics = rows.map(row => row.column_name);
             res.status(200).json({ success: true, metrics: metrics });
         } catch (error) {
@@ -702,7 +619,6 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 모든 산업 평균 데이터 조회 API 추가 ▼▼▼ ---
 router.get(
     '/industry-averages',
     authMiddleware,
@@ -719,14 +635,12 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 특정 산업 평균 데이터 수정 API 추가 ▼▼▼ ---
 router.put(
     '/industry-averages/:id',
     authMiddleware,
     checkPermission(['super_admin']),
     async (req, res) => {
         const { id } = req.params;
-        // 요청 body에서 모든 숫자 필드를 받아옵니다.
         const { 
             ghg_emissions_avg, energy_usage_avg, waste_generation_avg,
             non_regular_ratio_avg, disability_employment_ratio_avg, female_employee_ratio_avg,
@@ -768,8 +682,6 @@ router.put(
 );
 
 
-
-// --- ▼▼▼ 모든 벤치마크 채점 규칙 조회 API 추가 ▼▼▼ ---
 router.get(
     '/benchmark-rules',
     authMiddleware,
@@ -786,7 +698,6 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 특정 벤치마크 채점 규칙 수정 API 추가 ▼▼▼ ---
 router.put(
     '/benchmark-rules/:id',
     authMiddleware,
@@ -795,7 +706,6 @@ router.put(
         const { id } = req.params;
         const { score, upper_bound, description } = req.body;
 
-        // score와 upper_bound는 필수 값으로 검증
         if (score === undefined || upper_bound === undefined) {
             return res.status(400).json({ success: false, message: '점수와 상한값은 필수 항목입니다.' });
         }
@@ -820,14 +730,10 @@ router.put(
     }
 );
 
-// --- ▼▼▼ ESG 추천 프로그램 관리 API (CRUD) 추가 ▼▼▼ ---
-// GET /api/admin/programs - 모든 프로그램 목록 조회
 router.get('/programs', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM esg_programs ORDER BY id ASC');
         
-        // ★★★ 수정된 부분 ★★★
-        // 조회된 모든 프로그램의 데이터를 새로운 헬퍼 함수로 처리합니다.
         const processedPrograms = rows.map(processProgramData);
         
         res.status(200).json({ success: true, programs: processedPrograms });
@@ -837,166 +743,180 @@ router.get('/programs', authMiddleware, checkPermission(['super_admin', 'vice_su
     }
 });
 
-// POST /api/admin/programs - 새 프로그램 추가
-// routes/admin.js
 
-// POST /programs - 새 프로그램 생성 (파일과 텍스트를 한 번에 처리)
-/**
- * 파일명: routes/admin.js
- * 수정 위치: POST /api/admin/programs
- * 수정 일시: 2025-07-06 23:25
- */
 router.post(
     '/programs',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
-    upload.any(), // newImages 대신 any()를 사용
+    upload.any(),
     async (req, res) => {
     
-    const client = await db.pool.connect();
-    try {
-        await client.query('BEGIN');
+        const client = await db.pool.connect();
+        try {
+            await client.query('BEGIN');
 
-        const { content, ...otherBodyFields } = req.body;
-        const parsedContent = JSON.parse(content);
-        
-        const finalContent = await Promise.all(parsedContent.map(async (section) => {
-            if (!section.images || section.images.length === 0) return section;
+            const { content, ...otherBodyFields } = req.body;
+            const parsedContent = JSON.parse(content);
+            
+            const finalContent = await Promise.all(parsedContent.map(async (section) => {
+                if (!section.images || section.images.length === 0) return section;
 
-            const updatedImages = await Promise.all(section.images.map(async (placeholder) => {
-                const file = req.files.find(f => f.fieldname === placeholder);
-                if (file) {
-                    // s3-helper가 실제 S3 경로를 반환합니다.
-                    return await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
-                }
-                return null; // 새 파일이 아닌 경우 null 반환
+                const updatedImages = await Promise.all(section.images.map(async (placeholder) => {
+                    const file = req.files.find(f => f.fieldname === placeholder);
+                    if (file) {
+                        return await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
+                    }
+                    return null;
+                }));
+                return { ...section, images: updatedImages.filter(Boolean) };
             }));
-            // 최종적으로 S3 경로만 남깁니다.
-            return { ...section, images: updatedImages.filter(Boolean) };
-        }));
-        
-        const query = `
-            INSERT INTO esg_programs (title, program_code, esg_category, program_overview, content, economic_effects, related_links, risk_text, risk_description, opportunity_effects, service_regions, status, execution_type) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id;
-        `;
-        const values = [
-            otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
-            JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
-            otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects, otherBodyFields.service_regions.split(','), otherBodyFields.execution_type
-        ];
-        
-        await client.query(query, values);
-        await client.query('COMMIT');
-        res.status(201).json({ success: true, message: '프로그램이 성공적으로 생성되었습니다.' });
+            
+            const programQuery = `
+                INSERT INTO esg_programs (
+                    title, program_code, esg_category, program_overview, content, 
+                    economic_effects, related_links, risk_text, risk_description, 
+                    opportunity_effects, service_regions, execution_type, status
+                ) 
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id;
+            `;
+            const programValues = [
+                otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
+                JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
+                otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
+                otherBodyFields.service_regions.split(','), otherBodyFields.execution_type, 'draft' // status 기본값
+            ];
+            
+            const programResult = await client.query(programQuery, programValues);
+            const newProgramId = programResult.rows[0].id;
 
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error('프로그램 생성 에러:', error);
-        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
-    } finally {
-        client.release();
+            const solutionCategories = otherBodyFields.solution_categories ? otherBodyFields.solution_categories.split(',') : [];
+            
+            if (solutionCategories.length > 0) {
+                const categoryRes = await client.query(
+                    'SELECT id, category_name FROM solution_categories WHERE category_name = ANY($1::text[])',
+                    [solutionCategories]
+                );
+                const categoryMap = new Map(categoryRes.rows.map(row => [row.category_name, row.id]));
+
+                for (const categoryName of solutionCategories) {
+                    const categoryId = categoryMap.get(categoryName);
+                    if (categoryId) {
+                        await client.query(
+                            'INSERT INTO program_solution_categories (program_id, category_id) VALUES ($1, $2)',
+                            [newProgramId, categoryId]
+                        );
+                    }
+                }
+            }
+
+            await client.query('COMMIT');
+            res.status(201).json({ success: true, message: '프로그램이 성공적으로 생성되었습니다.' });
+
+        } catch (error) {
+            await client.query('ROLLBACK');
+            console.error('프로그램 생성 에러:', error);
+            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+        } finally {
+            client.release();
+        }
     }
-});
+);
 
-/**
- * 파일명: routes/admin.js
- * 수정 위치: PUT /api/admin/programs/:id
- * 수정 일시: 2025-07-06 23:25
- */
+
 router.put(
     '/programs/:id',
     authMiddleware,
-    checkPermission(['super_admin', 'vice_super_admin',  'content_manager']),
-    upload.any(), // newImages 대신 any() 사용
+    checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
+    upload.any(),
     async (req, res) => {
-    
-    const { id } = req.params;
-    const client = await db.pool.connect();
-    try {
-        await client.query('BEGIN');
+        const { id } = req.params;
+        const client = await db.pool.connect();
+        try {
+            await client.query('BEGIN');
 
-        // 1. 수정 전 옛날 이미지 경로 가져오기
-        const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
-        const oldImageUrls = new Set();
-        if (oldProgramRes.rows[0]?.content) {
-            // DB의 content는 이미 객체일 수 있으므로 안전하게 처리
-            const oldContent = Array.isArray(oldProgramRes.rows[0].content) ? oldProgramRes.rows[0].content : JSON.parse(oldProgramRes.rows[0].content);
-            oldContent.forEach(section => {
-                if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
-            });
-        }
-
-        const { content, ...otherBodyFields } = req.body;
-        const parsedContent = JSON.parse(content);
-        
-        const finalContent = await Promise.all(parsedContent.map(async (section) => {
-            if (!section.images || section.images.length === 0) return section;
-
-            const updatedImages = await Promise.all(section.images.map(async (imageOrPlaceholder) => {
-                if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('http')) {
-                    return imageOrPlaceholder; // 기존 이미지 URL
-                }
-                const file = req.files.find(f => f.fieldname === imageOrPlaceholder);
-                if (file) {
-                    return await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
-                }
-                return imageOrPlaceholder; // 처리 못한 경우, 원래 값 유지
+            const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
+            const oldImageUrls = new Set();
+            if (oldProgramRes.rows[0]?.content) {
+                const oldContent = Array.isArray(oldProgramRes.rows[0].content) ? oldProgramRes.rows[0].content : JSON.parse(oldProgramRes.rows[0].content);
+                oldContent.forEach(section => {
+                    if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
+                });
+            }
+            const { content, ...otherBodyFields } = req.body;
+            const parsedContent = JSON.parse(content);
+            const finalContent = await Promise.all(parsedContent.map(async (section) => {
+                if (!section.images || section.images.length === 0) return section;
+                const updatedImages = await Promise.all(section.images.map(async (imageOrPlaceholder) => {
+                    if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('http')) {
+                        return imageOrPlaceholder;
+                    }
+                    const file = req.files.find(f => f.fieldname === imageOrPlaceholder);
+                    if (file) {
+                        return await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
+                    }
+                    return imageOrPlaceholder;
+                }));
+                return { ...section, images: updatedImages.filter(Boolean) };
             }));
-            return { ...section, images: updatedImages.filter(Boolean) };
-        }));
+            const finalImageUrls = new Set();
+            finalContent.forEach(section => {
+                if (section.images) section.images.forEach(imgUrl => finalImageUrls.add(imgUrl));
+            });
+            const imagesToDelete = [...oldImageUrls].filter(url => !finalImageUrls.has(url));
+            if (imagesToDelete.length > 0) {
+                await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
+            }
 
-        // 3. 삭제할 이미지 찾아서 S3에서 제거
-        const finalImageUrls = new Set();
-        finalContent.forEach(section => {
-            if (section.images) section.images.forEach(imgUrl => finalImageUrls.add(imgUrl));
-        });
-        const imagesToDelete = [...oldImageUrls].filter(url => !finalImageUrls.has(url));
-        if (imagesToDelete.length > 0) {
-            await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
+            const programQuery = `
+                UPDATE esg_programs SET 
+                    title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, 
+                    economic_effects = $6, related_links = $7, risk_text = $8, risk_description = $9, 
+                    opportunity_effects = $10, service_regions = $11, execution_type = $12, updated_at = NOW()
+                WHERE id = $13;
+            `;
+            const programValues = [
+                otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
+                JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
+                otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
+                otherBodyFields.service_regions.split(','), otherBodyFields.execution_type, id
+            ];
+            await client.query(programQuery, programValues);
+
+            const solutionCategories = otherBodyFields.solution_categories ? otherBodyFields.solution_categories.split(',') : [];
+
+            await client.query('DELETE FROM program_solution_categories WHERE program_id = $1', [id]);
+
+            if (solutionCategories.length > 0) {
+                const categoryRes = await client.query(
+                    'SELECT id, category_name FROM solution_categories WHERE category_name = ANY($1::text[])',
+                    [solutionCategories]
+                );
+                const categoryMap = new Map(categoryRes.rows.map(row => [row.category_name, row.id]));
+
+                for (const categoryName of solutionCategories) {
+                    const categoryId = categoryMap.get(categoryName);
+                    if (categoryId) {
+                        await client.query(
+                            'INSERT INTO program_solution_categories (program_id, category_id) VALUES ($1, $2)',
+                            [id, categoryId]
+                        );
+                    }
+                }
+            }
+            
+            await client.query('COMMIT');
+            res.status(200).json({ success: true, message: '프로그램이 성공적으로 수정되었습니다.' });
+
+        } catch (error) {
+            await client.query('ROLLBACK');
+            console.error(`[CRITICAL] 프로그램(ID: ${id}) 수정 에러:`, error);
+            res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+        } finally {
+            client.release();
         }
-
-        // 4. DB에 최종 정보 업데이트
-        const query = `
-            UPDATE esg_programs SET 
-                title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, 
-                economic_effects = $6, related_links = $7, risk_text = $8, risk_description = $9, 
-                opportunity_effects = $10, service_regions = $11, execution_type = $12, updated_at = NOW()
-            WHERE id = $13;
-        `;
-        
-        // ★★★ 수정된 부분: 불필요한 JSON.parse()를 모두 제거합니다. ★★★
-        const values = [
-            otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
-            JSON.stringify(finalContent), // content는 DB 저장을 위해 다시 문자열로 변환
-            otherBodyFields.economic_effects, 
-            otherBodyFields.related_links, 
-            otherBodyFields.risk_text, 
-            otherBodyFields.risk_description, 
-            otherBodyFields.opportunity_effects,
-            otherBodyFields.service_regions.split(','),
-            otherBodyFields.execution_type, 
-            id
-        ];
-        
-        await client.query(query, values);
-        await client.query('COMMIT');
-        res.status(200).json({ success: true, message: '프로그램이 성공적으로 수정되었습니다.' });
-
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error(`[CRITICAL] 프로그램(ID: ${id}) 수정 에러:`, error);
-        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
-    } finally {
-        client.release();
     }
-});
+);
 
-// GET /api/admin/programs/:id - 특정 프로그램 하나만 조회
-/**
- * 파일명: routes/admin.js
- * 수정 위치: DELETE /api/admin/programs/:id
- * 기능: 옛날 데이터가 있어도 서버가 다운되지 않도록 수정
- */
 router.delete(
     '/programs/:id',
     authMiddleware,
@@ -1014,7 +934,6 @@ router.delete(
                 content.forEach(section => {
                     if (section.images && Array.isArray(section.images)) {
                         section.images.forEach(imageUrl => {
-                            // ★★★ S3 주소(http로 시작)일 경우에만 삭제 목록에 추가 ★★★
                             if (typeof imageUrl === 'string' && imageUrl.startsWith('http')) {
                                 imagesToDelete.push(imageUrl);
                             }
@@ -1039,10 +958,8 @@ router.delete(
             res.status(200).json({ success: true, message: '프로그램이 성공적으로 삭제되었습니다.' });
         } catch (error) {
             await client.query('ROLLBACK');
-            // ★★★ 수정된 부분: 콘솔에 상세 에러를 모두 출력합니다. ★★★
             console.error(`[CRITICAL] 프로그램(ID: ${id}) 수정 에러:`, error); 
             
-            // ★★★ 수정된 부분: 프론트엔드에 더 구체적인 에러 메시지를 보냅니다. ★★★
             res.status(500).json({ 
                 success: false, 
                 message: error.message || '서버 에러가 발생했습니다.' 
@@ -1053,38 +970,38 @@ router.delete(
     }
 );
 
-/**
- * 파일명: routes/admin.js
- * 수정 위치: 특정 프로그램 조회 API 추가
- * 수정 일시: 2025-07-03 16:59
- */
-
-// GET /api/admin/programs/:id - 특정 프로그램 정보 조회
-router.get('/programs/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin',  'content_manager']), async (req, res) => {
+router.get('/programs/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
     const { id } = req.params;
     try {
-        const { rows } = await db.query('SELECT * FROM esg_programs WHERE id = $1', [id]);
+        const query = `
+            SELECT p.*, COALESCE(sc.categories, '[]'::json) as solution_categories
+            FROM esg_programs p
+            LEFT JOIN (
+                SELECT psc.program_id, json_agg(sc.category_name) as categories
+                FROM program_solution_categories psc
+                JOIN solution_categories sc ON psc.category_id = sc.id
+                GROUP BY psc.program_id
+            ) sc ON p.id = sc.program_id
+            WHERE p.id = $1
+        `;
+        const { rows } = await db.query(query, [id]);
+        
         if (rows.length === 0) {
             return res.status(404).json({ success: false, message: '해당 프로그램을 찾을 수 없습니다.' });
         }
-
-        // ★★★ 수정된 부분 ★★★
-        // 조회된 프로그램 데이터를 새로운 헬퍼 함수로 처리합니다.
+        
         const processedProgram = processProgramData(rows[0]);
-
         res.status(200).json({ success: true, program: processedProgram });
+
     } catch (error) {
         console.error('프로그램 상세 조회 에러:', error);
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
 });
 
-/**
- * 프로그램 상태 변경(발행/초안) API
- */
 router.patch('/programs/:id/status', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body; // 'published' 또는 'draft' 값을 받습니다.
+    const { status } = req.body; 
 
     if (!status) {
         return res.status(400).json({ success: false, message: '상태 값이 필요합니다.' });
@@ -1109,15 +1026,6 @@ router.patch('/programs/:id/status', authMiddleware, checkPermission(['super_adm
     }
 });
 
-
-
-
-// POST /api/admin/upload-program-images - 프로그램 이미지 업로드
-/**
- * 파일명: routes/admin.js
- * 수정 위치: POST /api/admin/upload-program-images
- * 수정 일시: 2025-07-03 10:35
- */
 router.post(
     '/upload-program-images',
     authMiddleware,
@@ -1128,14 +1036,12 @@ router.post(
             return res.status(400).json({ success: false, message: '업로드된 파일이 없습니다.' });
         }
         try {
-            // ★★★ 여러 파일을 동시에 S3에 업로드하고, 완료되면 URL 목록을 받습니다. ★★★
             const imageUrls = await Promise.all(
                 req.files.map(file => 
                     uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId)
                 )
             );
             
-            // ★★★ 성공 시, 로컬 파일명이 아닌 최종 S3 URL 목록을 반환합니다. ★★★
             res.status(200).json({ 
                 success: true, 
                 message: "이미지가 성공적으로 업로드되었습니다.", 
@@ -1149,8 +1055,6 @@ router.post(
     }
 );
 
-
-// POST /api/admin/benchmark-rules - 새 벤치마크 규칙 추가
 router.post(
     '/benchmark-rules',
     authMiddleware,
@@ -1169,7 +1073,6 @@ router.post(
     }
 );
 
-// DELETE /api/admin/benchmark-rules/:id - 특정 벤치마크 규칙 삭제
 router.delete(
     '/benchmark-rules/:id',
     authMiddleware,
@@ -1189,15 +1092,12 @@ router.delete(
     }
 );
 
-// --- ▼▼▼ 전략 추천 규칙 관리 API (CRUD) 추가 ▼▼▼ ---
-// GET /api/admin/strategy-rules - 모든 전략 규칙 조회
 router.get(
     '/strategy-rules',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', ]),
     async (req, res) => {
         try {
-            // 이제 esg_programs 테이블과 JOIN하여 추천 프로그램의 제목도 함께 가져옵니다.
             const query = `
                 SELECT 
                     sr.id, 
@@ -1222,7 +1122,6 @@ router.get(
     }
 );
 
-// POST /api/admin/strategy-rules - 새 전략 규칙 추가
 router.post(
     '/strategy-rules',
     authMiddleware,
@@ -1231,7 +1130,6 @@ router.post(
         const { description, conditions, recommended_program_code, priority } = req.body;
         try {
             const query = 'INSERT INTO strategy_rules (description, conditions, recommended_program_code, priority) VALUES ($1, $2, $3, $4) RETURNING id';
-            // conditions 객체를 JSON 문자열로 변환하여 저장합니다.
             const values = [description, JSON.stringify(conditions), recommended_program_code, priority];
             await db.query(query, values);
             res.status(201).json({ success: true, message: '새로운 전략 규칙이 추가되었습니다.' });
@@ -1242,7 +1140,6 @@ router.post(
     }
 );
 
-// PUT /api/admin/strategy-rules/:id - 특정 전략 규칙 수정
 router.put(
     '/strategy-rules/:id',
     authMiddleware,
@@ -1263,7 +1160,6 @@ router.put(
     }
 );
 
-// DELETE /api/admin/strategy-rules/:id - 특정 전략 규칙 삭제
 router.delete(
     '/strategy-rules/:id',
     authMiddleware,
@@ -1281,8 +1177,6 @@ router.delete(
     }
 );
 
-// --- ▼▼▼ 산업별 ESG 이슈 관리 API (CRUD) 추가 ▼▼▼ ---
-// GET /api/admin/industry-issues - 모든 산업 이슈 조회
 router.get('/industry-issues', authMiddleware, checkPermission(['super_admin','vice_super_admin', ]), async (req, res) => {
     try {
         const query = `
@@ -1296,7 +1190,6 @@ router.get('/industry-issues', authMiddleware, checkPermission(['super_admin','v
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// POST /api/admin/industry-issues
 router.post('/industry-issues', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', ]), async (req, res) => {
     const { industry_code, key_issue, opportunity, threat, linked_metric, notes } = req.body;
     try {
@@ -1310,7 +1203,6 @@ router.post('/industry-issues', authMiddleware, checkPermission(['super_admin', 
     }
 });
 
-// PUT /api/admin/industry-issues/:id
 router.put('/industry-issues/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', ]), async (req, res) => {
     const { id } = req.params;
     const { key_issue, opportunity, threat, linked_metric, notes } = req.body;
@@ -1323,7 +1215,6 @@ router.put('/industry-issues/:id', authMiddleware, checkPermission(['super_admin
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// DELETE /api/admin/industry-issues/:id
 router.delete('/industry-issues/:id', authMiddleware, checkPermission(['super_admin', ]), async (req, res) => {
     const { id } = req.params;
     try {
@@ -1333,7 +1224,6 @@ router.delete('/industry-issues/:id', authMiddleware, checkPermission(['super_ad
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// --- ▼▼▼ 산업별 ESG 이슈 데이터 Export API 추가 ▼▼▼ ---
 router.get(
     '/industry-issues/export',
     authMiddleware,
@@ -1348,7 +1238,6 @@ router.get(
             res.setHeader('Content-Type', 'text/csv; charset=utf-8');
             res.setHeader('Content-Disposition', `attachment; filename="industry-issues-${Date.now()}.csv"`);
             
-            // 한글 깨짐 방지를 위한 BOM 추가
             const csvWithBom = '\uFEFF' + csvString;
             res.status(200).end(csvWithBom);
 
@@ -1359,7 +1248,6 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 산업별 ESG 이슈 데이터 Import API 추가 ▼▼▼ ---
 router.post(
     '/industry-issues/import',
     authMiddleware,
@@ -1388,7 +1276,6 @@ router.post(
                 const { industry_code, key_issue, opportunity, threat, linked_metric, notes } = record;
                 if (!industry_code) continue;
 
-                // ★★★ INSERT 대신 UPDATE만 수행하는 단순한 쿼리로 변경 ★★★
                 const query = `
                     UPDATE industry_esg_issues SET 
                         key_issue = $1, 
@@ -1401,7 +1288,6 @@ router.post(
                 `;
                 const result = await client.query(query, [key_issue, opportunity, threat, linked_metric, notes, industry_code]);
                 
-                // 각 행이 실제로 업데이트되었는지 확인하는 로그 추가
                 if (result.rowCount > 0) {
                     updatedCount++;
                 }
@@ -1421,7 +1307,6 @@ router.post(
     }
 );
 
-// GET /company-size-issues - 모든 규모별 이슈 조회
 router.get('/company-size-issues', authMiddleware, async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM company_size_esg_issues');
@@ -1429,7 +1314,6 @@ router.get('/company-size-issues', authMiddleware, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// PUT /company-size-issues - 모든 규모별 이슈 일괄 수정
 router.put('/company-size-issues', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { issues } = req.body;
     const client = await db.pool.connect();
@@ -1452,7 +1336,6 @@ router.put('/company-size-issues', authMiddleware, checkPermission(['super_admin
     }
 });
 
-// GET /api/admin/regional-issues - 모든 지역 이슈 조회
 router.get('/regional-issues', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     try {
         const query = 'SELECT * FROM regional_esg_issues ORDER BY display_order ASC';
@@ -1461,7 +1344,6 @@ router.get('/regional-issues', authMiddleware, checkPermission(['super_admin', '
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// POST /api/admin/regional-issues - 새 지역 이슈 추가
 router.post('/regional-issues', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { region, esg_category, content } = req.body;
     try {
@@ -1470,13 +1352,11 @@ router.post('/regional-issues', authMiddleware, checkPermission(['super_admin', 
         await db.query(query, values);
         res.status(201).json({ success: true, message: '새로운 지역별 이슈가 추가되었습니다.' });
     } catch (error) {
-            // ★★★ 중복 확인 if문을 삭제하여, 모든 오류를 서버 에러로 처리합니다. ★★★
             console.error("지역별 이슈 추가 에러:", error);
             res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
         }
 });
 
-// PUT /api/admin/regional-issues/:id - 특정 지역 이슈 수정
 router.put('/regional-issues/:id', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     const { id } = req.params;
     const { region, esg_category, content } = req.body;
@@ -1489,7 +1369,6 @@ router.put('/regional-issues/:id', authMiddleware, checkPermission(['super_admin
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// DELETE /api/admin/regional-issues/:id - 특정 지역 이슈 삭제
 router.delete(
     '/regional-issues/:id',
     authMiddleware,
@@ -1504,7 +1383,6 @@ router.delete(
     }
 );
 
-// --- ▼▼▼ 지역별 이슈 순서 변경 API 추가 ▼▼▼ ---
 router.post(
     '/regional-issues/reorder',
     authMiddleware,
@@ -1521,7 +1399,7 @@ router.post(
             let otherRes;
             if (direction === 'up') {
                 otherRes = await client.query('SELECT id, display_order FROM regional_esg_issues WHERE display_order < $1 ORDER BY display_order DESC LIMIT 1', [currentOrder]);
-            } else { // down
+            } else { 
                 otherRes = await client.query('SELECT id, display_order FROM regional_esg_issues WHERE display_order > $1 ORDER BY display_order ASC LIMIT 1', [currentOrder]);
             }
 
@@ -1542,7 +1420,6 @@ router.post(
     }
 );
 
-// --- ▼▼▼ ESG 통계 리포트용 API (수정) ▼▼▼ ---
 router.get(
     '/statistics/all-diagnoses',
     authMiddleware,
@@ -1550,7 +1427,6 @@ router.get(
     async (req, res) => {
         const { year } = req.query;
         try {
-            // ★★★ 모든 컬럼을 명시적으로 나열하여 오류를 방지합니다. ★★★
             let query = `
                 SELECT
                     d.id AS diagnosis_id,
@@ -1607,7 +1483,6 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 통계용 연도 목록 API 추가 ▼▼▼ ---
 router.get(
     '/statistics/available-years',
     authMiddleware,
@@ -1623,7 +1498,6 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 통계 데이터 Export API (새로 추가) ▼▼▼ ---
 router.get(
     '/statistics/all-diagnoses/export',
     authMiddleware,
@@ -1650,7 +1524,6 @@ router.get(
                 return res.status(404).send('Export할 데이터가 없습니다.');
             }
 
-            // 2. 모든 질문 코드를 수집하고 자연어 순으로 정렬합니다.
             const naturalSort = (a, b) => {
                 const re = /(\d+)/g;
                 const a_parts = a.split(re).filter(Boolean);
@@ -1675,7 +1548,6 @@ router.get(
             });
             const sortedQuestionCodes = Array.from(allQuestionCodes).sort(naturalSort);
 
-            // 3. 최종 데이터를 CSV 형식에 맞게 가공합니다.
             const dataForCsv = rows.map(row => {
                 const flatRow = { ...row };
                 const answersMap = new Map();
@@ -1694,7 +1566,6 @@ router.get(
                 return flatRow;
             });
             
-            // 4. CSV로 변환하여 다운로드합니다.
             const csvString = stringify(dataForCsv, { header: true });
             res.setHeader('Content-Type', 'text/csv; charset=utf-8');
             res.setHeader('Content-Disposition', `attachment; filename="diagnoses-statistics-${new Date().toISOString().slice(0,10)}.csv"`);
@@ -1708,7 +1579,6 @@ router.get(
 );
 
 
-// --- ▼▼▼ 산업 평균 점수 계산 엔진 API (최종 완성본) ▼▼▼ ---
 router.post(
     '/benchmarks/calculate',
     authMiddleware,
@@ -1734,22 +1604,18 @@ router.post(
             const benchmarkRules = benchmarkRulesRes.rows;
             const answerRules = answerRulesRes.rows;
             
-            // 0점으로 처리할 분기용 질문 목록
             const zeroScoreQuestions = ['S-Q1', 'S-Q2', 'S-Q3', 'S-Q4', 'S-Q5', 'S-Q6', 'S-Q7', 'S-Q8', 'S-Q9', 'S-Q10', 'S-Q11', 'S-Q12', 'S-Q13', 'S-Q14', 'S-Q15', 'S-Q16'];
 
             for (const industry of allIndustries) {
                 const industryAverages = allAverages.find(avg => avg.industry_code === industry.code);
 
                 for (const question of simpleQuestions) {
-                    let calculatedScore = null; // 기본적으로 null로 시작
-
-                    // 2번 규칙: 분기용 질문은 0점으로 처리
+                    let calculatedScore = null; 
                     if (zeroScoreQuestions.includes(question.question_code)) {
                         calculatedScore = 0;
                     }
-                    // 1번 규칙: 벤치마크 비교 채점
                     else if (question.scoring_method === 'benchmark_comparison') {
-                        calculatedScore = 50.00; // 기본 50점
+                        calculatedScore = 50.00; 
                         if (question.benchmark_metric && industryAverages) {
                             const metricValue = parseFloat(industryAverages[question.benchmark_metric]);
                             if (!isNaN(metricValue)) {
@@ -1763,7 +1629,6 @@ router.post(
                             }
                         }
                     } 
-                    // 2번 규칙: 답변 추정을 통한 일반 규칙 채점
                     else if (question.scoring_method === 'direct_score') {
                         const translationRule = answerRules.find(r => r.question_code === question.question_code);
                         if (translationRule && industryAverages) {
@@ -1782,16 +1647,14 @@ router.post(
                                     const finalRule = scoringRules.find(r => r.question_code === question.question_code && r.answer_condition === estimatedAnswerValue);
                                     if (finalRule) calculatedScore = parseFloat(finalRule.score);
                                 } else {
-                                     calculatedScore = 50.00; // 추정 규칙은 있지만, 값이 범위에 없는 경우
+                                     calculatedScore = 50.00; 
                                 }
                             }
                         } else {
-                             // 3번 규칙: 위 모든 경우에 해당하지 않는 나머지 (S-Q13_1 등)
                              calculatedScore = 50.00;
                         }
                     }
 
-                    // 계산된 점수만 DB에 저장/수정합니다.
                     if (calculatedScore !== null) {
                         const upsertQuery = `
                             INSERT INTO industry_benchmark_scores (industry_code, question_code, average_score, last_calculated_at)
@@ -1815,14 +1678,12 @@ router.post(
     }
 );
 
-// GET /api/admin/benchmark-scores - 계산된 모든 산업 평균 점수 조회
 router.get(
     '/benchmark-scores',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         try {
-            // industry_benchmark_scores와 industries 테이블을 JOIN하여 산업명까지 함께 가져옵니다.
             const query = `
                 SELECT 
                     b.id,
@@ -1846,14 +1707,13 @@ router.get(
     }
 );
 
-// PUT /api/admin/benchmark-scores/:id - 특정 산업 평균 점수 수정
 router.put(
     '/benchmark-scores/:id',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         const { id } = req.params;
-        const { average_score, notes } = req.body; // 수정할 데이터
+        const { average_score, notes } = req.body; 
 
         try {
             const query = 'UPDATE industry_benchmark_scores SET average_score = $1, notes = $2, last_calculated_at = NOW() WHERE id = $3 RETURNING id';
@@ -1871,9 +1731,7 @@ router.put(
     }
 );
 
-// --- ▼▼▼ 답변 추정 규칙 관리 API (CRUD) 추가 ▼▼▼ ---
 
-// GET /api/admin/answer-rules - 모든 답변 추정 규칙 조회
 router.get('/answer-rules', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM average_to_answer_rules ORDER BY metric_name, lower_bound');
@@ -1881,7 +1739,6 @@ router.get('/answer-rules', authMiddleware, checkPermission(['super_admin', 'vic
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// POST /api/admin/answer-rules - 새 답변 추정 규칙 추가
 router.post('/answer-rules', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { metric_name, question_code, lower_bound, upper_bound, resulting_answer_value } = req.body;
     try {
@@ -1891,7 +1748,6 @@ router.post('/answer-rules', authMiddleware, checkPermission(['super_admin', 'vi
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// PUT /api/admin/answer-rules/:id - 특정 답변 추정 규칙 수정
 router.put('/answer-rules/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { id } = req.params;
     const { lower_bound, upper_bound, resulting_answer_value } = req.body;
@@ -1903,7 +1759,6 @@ router.put('/answer-rules/:id', authMiddleware, checkPermission(['super_admin', 
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// DELETE /api/admin/answer-rules/:id - 특정 답변 추정 규칙 삭제
 router.delete('/answer-rules/:id', authMiddleware, checkPermission(['super_admin', '']), async (req, res) => {
     const { id } = req.params;
     try {
@@ -1913,7 +1768,6 @@ router.delete('/answer-rules/:id', authMiddleware, checkPermission(['super_admin
     } catch (error) { res.status(500).json({ success: false, message: '서버 에러' }); }
 });
 
-// GET /api/admin/content/:key - 특정 콘텐츠 조회 (관리자용)
 router.get(
     '/content/:key',
     authMiddleware,
@@ -1927,8 +1781,6 @@ router.get(
                 return res.status(200).json({ success: true, content: defaultValue });
             }
 
-            // ★★★ 수정된 부분 ★★★
-            // 조회된 콘텐츠의 이미지 경로를 전체 URL로 변환합니다.
             const processedContent = convertSiteContentImageUrls(rows[0].content_value);
 
             res.status(200).json({ success: true, content: processedContent });
@@ -1939,7 +1791,6 @@ router.get(
     }
 );
 
-// --- ▼▼▼ 사이트 콘텐츠 수정 API 추가 ▼▼▼ ---
 router.put(
     '/content/:key',
     authMiddleware,
@@ -1959,12 +1810,7 @@ router.put(
     }
 );
 
-// --- ▼▼▼ 페이지 콘텐츠 이미지 업로드 API 추가 ▼▼▼ ---
-/**
- * 파일명: routes/admin.js
- * 수정 위치: POST /api/admin/upload-page-images
- * 수정 일시: 2025-07-03 10:37
- */
+
 router.post(
     '/upload-page-images',
     authMiddleware,
@@ -1975,14 +1821,12 @@ router.post(
             return res.status(400).json({ success: false, message: '업로드된 파일이 없습니다.' });
         }
         try {
-            // ★★★ 여러 파일을 동시에 S3에 업로드하고, 완료되면 URL 목록을 받습니다. ★★★
             const imageUrls = await Promise.all(
                 req.files.map(file => 
                     uploadImageToS3(file.buffer, file.originalname, 'pages', req.user.userId)
                 )
             );
             
-            // ★★★ 성공 시, 최종 S3 URL 목록을 반환합니다. ★★★
             res.status(200).json({ 
                 success: true, 
                 message: "이미지가 성공적으로 업로드되었습니다.", 
@@ -1996,12 +1840,7 @@ router.post(
     }
 );
 
-/**
- * 파일명: routes/admin.js
- * 수정 위치: 협력사(Partners) 관리 API 전체
- * 수정 일시: 2025-07-04 02:41
- */
-// GET /api/admin/partners - 모든 협력사 목록 조회 (수정 없음)
+
 router.get(
     '/partners',
     authMiddleware,
@@ -2025,7 +1864,6 @@ router.get(
     }
 );
 
-// POST /api/admin/partners - 새 협력사 추가 (S3 업로드 기능 포함)
 router.post(
     '/partners',
     authMiddleware,
@@ -2037,62 +1875,49 @@ router.post(
             return res.status(400).json({ success: false, message: '로고 이미지를 선택해주세요.' });
         }
 
-        // ★★★ 수정된 부분: 트랜잭션을 위해 client를 선언합니다. ★★★
         const client = await db.pool.connect();
         try {
-            // 트랜잭션 시작
             await client.query('BEGIN');
 
-            // S3에 이미지 업로드
             const logoUrl = await uploadImageToS3(req.file.buffer, req.file.originalname, 'partners', req.user.userId);
 
-            // 가장 마지막 순서 값을 찾아 +1
             const orderRes = await client.query('SELECT MAX(display_order) as max_order FROM partners');
             const newOrder = (orderRes.rows[0].max_order || 0) + 1;
 
-            // DB에 협력사 정보 저장
             const query = 'INSERT INTO partners (name, logo_url, link_url, display_order) VALUES ($1, $2, $3, $4) RETURNING id';
             await client.query(query, [name, logoUrl, link_url, newOrder]);
             
-            // 모든 작업이 성공하면 최종 반영
             await client.query('COMMIT'); 
             res.status(201).json({ success: true, message: '새로운 협력사가 추가되었습니다.' });
 
         } catch (error) { 
-            // 에러 발생 시 모든 작업을 되돌림
             await client.query('ROLLBACK');
             console.error("협력사 추가 에러:", error);
             res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' }); 
         } finally {
-            // 작업이 끝나면 DB 연결을 반환하여 자원 낭비 방지
             client.release();
         }
     }
 );
 
-// PUT /api/admin/partners/:id - 특정 협력사 수정 (S3 업로드 기능 포함)
 router.put(
     '/partners/:id',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin']),
-    upload.single('partnerLogo'), // 새 로고 파일이 있다면 'partnerLogo' 필드로 받습니다.
+    upload.single('partnerLogo'), 
     async (req, res) => {
         const { id } = req.params;
-        const { name, link_url, logo_url } = req.body; // logo_url은 새 파일이 없을 때의 기존 URL
+        const { name, link_url, logo_url } = req.body; 
         let finalLogoUrl = logo_url;
 
         try {
-            // 1. 새로운 로고 파일이 함께 전송되었다면
             if (req.file) {
-                // 1-1. 기존 로고가 있다면 S3에서 먼저 삭제합니다.
                 if (logo_url && logo_url.startsWith('http')) {
                     await deleteImageFromS3(logo_url);
                 }
-                // 1-2. 새 로고를 S3에 업로드하고, 최종 URL을 업데이트합니다.
                 finalLogoUrl = await uploadImageToS3(req.file.buffer, req.file.originalname, 'partners', req.user.userId);
             }
             
-            // 2. DB 정보를 업데이트합니다.
             const query = 'UPDATE partners SET name = $1, logo_url = $2, link_url = $3 WHERE id = $4';
             const { rowCount } = await db.query(query, [name, finalLogoUrl, link_url, id]);
             
@@ -2106,9 +1931,8 @@ router.put(
     }
 );
 
-// POST /api/admin/partners/reorder - 파트너 순서 변경
 router.post('/partners/reorder', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
-    const { partnerId, direction } = req.body; // { partnerId: 5, direction: 'up' }
+    const { partnerId, direction } = req.body; 
 
     const client = await db.pool.connect();
     try {
@@ -2120,14 +1944,11 @@ router.post('/partners/reorder', authMiddleware, checkPermission(['super_admin',
 
         let otherRes;
         if (direction === 'up') {
-            // 현재 순서보다 작은 것 중 가장 큰(가까운) 것을 찾음
             otherRes = await client.query('SELECT id, display_order FROM partners WHERE display_order < $1 ORDER BY display_order DESC LIMIT 1', [currentOrder]);
         } else { // 'down'
-            // 현재 순서보다 큰 것 중 가장 작은(가까운) 것을 찾음
             otherRes = await client.query('SELECT id, display_order FROM partners WHERE display_order > $1 ORDER BY display_order ASC LIMIT 1', [currentOrder]);
         }
 
-        // 바꿀 대상이 있으면, 두 파트너의 display_order 값을 서로 맞바꿈
         if (otherRes.rows.length > 0) {
             const otherPartner = otherRes.rows[0];
             await client.query('UPDATE partners SET display_order = $1 WHERE id = $2', [otherPartner.display_order, partnerId]);
@@ -2145,7 +1966,6 @@ router.post('/partners/reorder', authMiddleware, checkPermission(['super_admin',
     }
 });
 
-// DELETE /api/admin/partners/:id - 특정 협력사 삭제 (S3 삭제 기능 포함)
 router.delete(
     '/partners/:id',
     authMiddleware,
@@ -2153,15 +1973,12 @@ router.delete(
     async (req, res) => {
         const { id } = req.params;
         try {
-            // 1. DB에서 삭제할 로고의 URL을 먼저 가져옵니다.
             const logoRes = await db.query('SELECT logo_url FROM partners WHERE id = $1', [id]);
             const logoUrlToDelete = logoRes.rows[0]?.logo_url;
 
-            // 2. DB에서 협력사 정보를 삭제합니다.
             const { rowCount } = await db.query('DELETE FROM partners WHERE id = $1', [id]);
             if (rowCount === 0) return res.status(404).json({ success: false, message: '항목을 찾을 수 없습니다.' });
 
-            // 3. DB 삭제 성공 후, S3에서 로고 이미지를 삭제합니다.
             if (logoUrlToDelete && logoUrlToDelete.startsWith('http')) {
                 await deleteImageFromS3(logoUrlToDelete);
             }
@@ -2174,13 +1991,10 @@ router.delete(
     }
 );
 
-// --- ▼▼▼ 사이트 메타 정보(공유 미리보기) 관리 API ▼▼▼ ---
-// GET /api/admin/site-meta - 현재 사이트 메타 정보 조회
 router.get('/site-meta', authMiddleware, async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM site_meta WHERE id = 1');
         if (rows.length === 0) {
-            // 기본값이 없으면 초기화
             return res.json({ success: true, meta: { title: '', description: '', image_url: '' } });
         }
         res.json({ success: true, meta: rows[0] });
@@ -2189,28 +2003,23 @@ router.get('/site-meta', authMiddleware, async (req, res) => {
     }
 });
 
-// PUT /api/admin/site-meta - 사이트 메타 정보 수정
 router.put(
     '/site-meta',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin']),
-    upload.single('metaImage'), // 'metaImage' 필드로 새 썸네일 이미지를 받습니다.
+    upload.single('metaImage'),
     async (req, res) => {
         const { title, description, existing_image_url } = req.body;
         let finalImageUrl = existing_image_url;
 
         try {
-            // 1. 새로운 썸네일 이미지가 업로드된 경우
             if (req.file) {
-                // 1-1. 기존 이미지가 있었다면 S3에서 삭제
                 if (existing_image_url && existing_image_url.startsWith('http')) {
                     await deleteImageFromS3(existing_image_url);
                 }
-                // 1-2. 새 이미지를 S3에 업로드하고 URL을 교체
                 finalImageUrl = await uploadImageToS3(req.file.buffer, req.file.originalname, 'meta', req.user.userId);
             }
 
-            // 2. DB에 메타 정보를 업데이트 (없으면 새로 생성 - ON CONFLICT)
             const query = `
                 INSERT INTO site_meta (id, title, description, image_url)
                 VALUES (1, $1, $2, $3)
@@ -2227,13 +2036,10 @@ router.put(
     }
 );
 
-
-// --- ▼▼▼ 시뮬레이터 매개변수 관리 API (조회, 수정) 추가 ▼▼▼ ---
-// GET /api/admin/simulator-parameters - 모든 시뮬레이터 매개변수 조회
 router.get(
     '/simulator-parameters',
     authMiddleware,
-    checkPermission(['super_admin']), // 슈퍼 관리자만 접근 가능
+    checkPermission(['super_admin']), 
     async (req, res) => {
         try {
             const { rows } = await db.query('SELECT * FROM simulator_parameters ORDER BY id ASC');
@@ -2245,7 +2051,6 @@ router.get(
     }
 );
 
-// PUT /api/admin/simulator-parameters/:id - 특정 매개변수 수정
 router.put(
     '/simulator-parameters/:id',
     authMiddleware,
@@ -2274,10 +2079,8 @@ router.put(
     }
 );
 
-// GET /api/admin/industry-average-columns - 계산에 사용할 수 있는 산업 평균 데이터 컬럼 목록 조회
 router.get('/industry-average-columns', authMiddleware, async (req, res) => {
     try {
-        // information_schema.columns는 데이터베이스의 테이블 구조(메타데이터)를 조회하는 표준 방식입니다.
         const query = `
             SELECT column_name 
             FROM information_schema.columns
@@ -2287,8 +2090,6 @@ router.get('/industry-average-columns', authMiddleware, async (req, res) => {
         `;
         const { rows } = await db.query(query);
         
-        // 프론트엔드에서 사용하기 쉽게 문자열 배열로 변환합니다.
-        // 결과 예시: ['carbon_emissions_avg', 'waste_generation_avg', ...]
         const columnNames = rows.map(row => row.column_name);
         
         res.status(200).json({ success: true, columns: columnNames });
@@ -2299,10 +2100,8 @@ router.get('/industry-average-columns', authMiddleware, async (req, res) => {
     }
 });
 
-// GET /api/admin/applications - 모든 프로그램 신청 현황 조회
 router.get('/applications', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     try {
-        // 여러 테이블을 JOIN하여 필요한 모든 정보를 한 번에 가져옵니다.
         const query = `
             SELECT 
                 ua.id,
@@ -2324,13 +2123,11 @@ router.get('/applications', authMiddleware, checkPermission(['super_admin', 'vic
         `;
         const { rows } = await db.query(query);
 
-        // related_links(JSON)에서 첫 번째 단체명만 추출하여 새로운 속성으로 추가합니다.
         const processedRows = rows.map(row => {
             let organization_name = '-';
             if (row.related_links && row.related_links.length > 0) {
                 organization_name = row.related_links[0].organization_name || '-';
             }
-            // 기존 row 객체에 organization_name을 추가하고, 불필요한 related_links는 삭제
             delete row.related_links;
             return { ...row, organization_name };
         });
@@ -2342,7 +2139,6 @@ router.get('/applications', authMiddleware, checkPermission(['super_admin', 'vic
     }
 });
 
-// GET /api/admin/applications/export - 프로그램 신청 현황 CSV로 내보내기
 router.get('/applications/export', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     try {
         const query = `
@@ -2370,13 +2166,11 @@ router.get('/applications/export', authMiddleware, checkPermission(['super_admin
             return res.status(404).send('내보낼 데이터가 없습니다.');
         }
 
-        // csv-stringify를 사용하여 CSV 문자열 생성
         const csvString = stringify(rows, { header: true });
 
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="applications-${new Date().toISOString().slice(0,10)}.csv"`);
         
-        // 한글 깨짐 방지를 위한 BOM 추가
         res.status(200).end('\uFEFF' + csvString);
 
     } catch (error) {
@@ -2385,10 +2179,8 @@ router.get('/applications/export', authMiddleware, checkPermission(['super_admin
     }
 });
 
-// GET /api/admin/news - 모든 소식 목록 조회
 router.get('/news', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
     try {
-        // ★★★ SELECT 절에 is_pinned 컬럼을 추가합니다. ★★★
         const query = 'SELECT id, title, category, status, created_at, is_pinned FROM news_posts ORDER BY id DESC';
         const { rows } = await db.query(query);
         res.status(200).json({ success: true, posts: rows });
@@ -2398,10 +2190,6 @@ router.get('/news', authMiddleware, checkPermission(['super_admin', 'vice_super_
     }
 });
 
-
-
-// --- 뉴스/소식 관리 API (신규, 수정, 삭제, 상세 조회 기능 추가) ---
-// GET /api/admin/news/:id - 수정할 특정 게시물 정보 조회
 router.get('/news/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     try {
@@ -2420,7 +2208,6 @@ router.get('/news/:id', authMiddleware, async (req, res) => {
     }
 });
 
-// PATCH /api/admin/news/:id/pin - 게시물 상단 고정 상태 변경
 router.patch('/news/:id/pin', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     const { id } = req.params;
     const { isPinned } = req.body;
@@ -2433,7 +2220,6 @@ router.patch('/news/:id/pin', authMiddleware, checkPermission(['super_admin']), 
     }
 });
 
-// POST /api/admin/news - 새 소식 저장 (FormData 방식)
 router.post('/news', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), upload.any(), async (req, res) => {
     const { title, category, status, content } = req.body;
     const { userId } = req.user; 
@@ -2441,21 +2227,18 @@ router.post('/news', authMiddleware, checkPermission(['super_admin', 'vice_super
     try {
         const parsedContent = JSON.parse(content);
         
-        // ★★★ S3 업로드 로직으로 수정 ★★★
         const finalContent = await Promise.all(parsedContent.map(async (section) => {
             const images = await Promise.all(section.images.map(async (placeholder) => {
                 const file = req.files.find(f => f.fieldname === placeholder);
                 if (file) {
-                    // S3 헬퍼 함수를 호출하여 업로드하고 URL을 받습니다.
                     return await uploadImageToS3(file.buffer, file.originalname, 'news', userId);
                 }
                 return null;
             }));
             
-            return { ...section, images: images.filter(Boolean) }; // null 값 제거
+            return { ...section, images: images.filter(Boolean) };
         }));
         
-        // DB에 최종 저장
         const query = `INSERT INTO news_posts (title, content, category, status, author_id) VALUES ($1, $2, $3, $4, $5) RETURNING id`;
         const values = [title, JSON.stringify(finalContent), category, status || 'draft', userId];
         
@@ -2468,18 +2251,12 @@ router.post('/news', authMiddleware, checkPermission(['super_admin', 'vice_super
     }
 });
 
-// PUT /api/admin/news/:id - 게시물 수정
-/**
- * 파일명: routes/admin.js
- * 수정 위치: PUT /api/admin/news/:id
- * 수정 일시: 2025-07-04 02:15
- */
+
 router.put('/news/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin',  'content_manager']), upload.any(), async (req, res) => {
     const { id } = req.params;
     const { title, category, status, content } = req.body;
     
     try {
-        // --- 1. DB에서 수정 전의 기존 이미지 URL 목록을 미리 가져옵니다. ---
         const oldPostRes = await db.query('SELECT content FROM news_posts WHERE id = $1', [id]);
         const oldImageUrls = new Set();
         if (oldPostRes.rows.length > 0 && oldPostRes.rows[0].content) {
@@ -2492,11 +2269,9 @@ router.put('/news/:id', authMiddleware, checkPermission(['super_admin', 'vice_su
         
         const finalContent = await Promise.all(parsedContent.map(async (section) => {
             const updatedImages = await Promise.all(section.images.map(async (imageOrPlaceholder) => {
-                // 이미 업로드된 URL인 경우 그대로 반환
                 if (typeof imageOrPlaceholder === 'string' && imageOrPlaceholder.startsWith('http')) {
                     return imageOrPlaceholder;
                 }
-                // 새로운 파일(placeholder)인 경우, S3에 업로드하고 URL 반환
                 const file = req.files.find(f => f.fieldname === imageOrPlaceholder);
                 if (file) {
                     return await uploadImageToS3(file.buffer, file.originalname, 'news', req.user.userId);
@@ -2506,7 +2281,6 @@ router.put('/news/:id', authMiddleware, checkPermission(['super_admin', 'vice_su
             return { ...section, images: updatedImages.filter(Boolean) };
         }));
 
-        // --- 2. 수정 후의 최종 이미지 URL 목록과 비교하여 삭제된 이미지를 찾습니다. ---
         const newImageUrls = new Set();
         finalContent.forEach(section => {
             if (section.images) section.images.forEach(imgUrl => newImageUrls.add(imgUrl));
@@ -2514,12 +2288,10 @@ router.put('/news/:id', authMiddleware, checkPermission(['super_admin', 'vice_su
 
         const imagesToDelete = [...oldImageUrls].filter(url => !newImageUrls.has(url));
         
-        // --- 3. S3에서 삭제된 이미지들을 제거합니다. ---
         if (imagesToDelete.length > 0) {
             await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
         }
 
-        // 4. DB에 최종 데이터를 업데이트합니다.
         const query = `
             UPDATE news_posts 
             SET title = $1, content = $2, category = $3, status = $4, updated_at = NOW() 
@@ -2535,12 +2307,10 @@ router.put('/news/:id', authMiddleware, checkPermission(['super_admin', 'vice_su
     }
 });
 
-// PATCH /api/admin/news/:id/status - 소식 상태 변경 
 router.patch('/news/:id/status', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
 
-    // --- 디버깅 로그 추가 ---
     console.log(`[API PATCH /news/:id/status] Received request...`);
     console.log(`  -> Post ID: ${id}`);
     console.log(`  -> New Status: ${status}`);
@@ -2553,7 +2323,6 @@ router.patch('/news/:id/status', authMiddleware, checkPermission(['super_admin']
         const query = 'UPDATE news_posts SET status = $1 WHERE id = $2';
         const { rowCount } = await db.query(query, [status, id]);
         
-        // --- 디버깅 로그 추가 ---
         console.log(`  -> DB update executed. Affected rows: ${rowCount}`);
         
         if (rowCount === 0) {
@@ -2566,11 +2335,9 @@ router.patch('/news/:id/status', authMiddleware, checkPermission(['super_admin']
     }
 });
 
-// DELETE /api/admin/news/:id - 게시물 삭제
 router.delete('/news/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin' ]), async (req, res) => {
     const { id } = req.params;
     try {
-        // 1. DB에서 삭제할 게시물의 이미지 URL들을 가져옵니다.
         const postRes = await db.query('SELECT content FROM news_posts WHERE id = $1', [id]);
         if (postRes.rows.length > 0 && postRes.rows[0].content) {
             const content = postRes.rows[0].content;
@@ -2581,13 +2348,11 @@ router.delete('/news/:id', authMiddleware, checkPermission(['super_admin', 'vice
                 }
             });
 
-            // 2. S3에서 해당 이미지들을 삭제합니다.
             if (imagesToDelete.length > 0) {
                 await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
             }
         }
 
-        // 3. DB에서 게시물 데이터를 삭제합니다.
         const { rowCount } = await db.query('DELETE FROM news_posts WHERE id = $1', [id]);
         if (rowCount === 0) {
             return res.status(404).json({ success: false, message: '삭제할 게시물을 찾을 수 없습니다.' });
@@ -2600,20 +2365,17 @@ router.delete('/news/:id', authMiddleware, checkPermission(['super_admin', 'vice
     }
 });
 
-// POST /api/admin/upload-news-image - 뉴스 이미지 업로드
 router.post('/upload-news-image', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), upload.array('newsImages', 3), async (req, res) => {
     if (!req.files || req.files.length === 0) {
         return res.status(400).json({ success: false, message: '업로드된 파일이 없습니다.' });
     }
     try {
-        // ★★★ 여러 파일을 동시에 S3에 업로드하고, 완료되면 URL 목록을 받습니다. ★★★
         const imageUrls = await Promise.all(
             req.files.map(file => 
                 uploadImageToS3(file.buffer, file.originalname, 'news', req.user.userId)
             )
         );
         
-        // ★★★ 성공 시, 로컬 경로가 아닌 최종 S3 URL 목록을 반환합니다. ★★★
         res.status(200).json({ 
             success: true, 
             message: "이미지가 성공적으로 업로드되었습니다.", 
@@ -2626,7 +2388,6 @@ router.post('/upload-news-image', authMiddleware, checkPermission(['super_admin'
     }
 });
 
-// GET /api/admin/site-content
 router.get('/site-content', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     try {
         const [contentRes, sitesRes] = await Promise.all([
@@ -2636,8 +2397,6 @@ router.get('/site-content', authMiddleware, checkPermission(['super_admin']), as
 
         const siteContent = contentRes.rows[0] || {};
 
-        // ★★★ 수정된 부분 ★★★
-        // site_content의 메인 페이지 콘텐츠 이미지 경로를 전체 URL로 변환합니다.
         if (siteContent.content_value) {
             siteContent.content_value = convertSiteContentImageUrls(siteContent.content_value);
         }
@@ -2654,7 +2413,6 @@ router.get('/site-content', authMiddleware, checkPermission(['super_admin']), as
 });
 
 
-// ★★★ PUT /api/admin/site-content - 사이트 전체 콘텐츠 업데이트 (최종 완성본) ★★★
 router.put('/site-content', authMiddleware, checkPermission(['super_admin']), upload.any(), async (req, res) => {
     const { footer_info, terms_of_service, privacy_policy, marketing_consent_text, related_sites, main_page_content } = req.body;
     const newImageFiles = req.files;
@@ -2667,16 +2425,14 @@ router.put('/site-content', authMiddleware, checkPermission(['super_admin']), up
         
         const finalMainContent = await Promise.all(parsedMainContent.map(async (section) => {
             const updatedImages = await Promise.all(section.images.map(async (imageOrPlaceholder) => {
-                // 기존 S3 URL인 경우
                 if (typeof imageOrPlaceholder === 'object' && imageOrPlaceholder.file.startsWith('https')) {
                     return imageOrPlaceholder;
                 }
                 
-                // 새로운 파일인 경우 S3에 업로드
                 const file = newImageFiles.find(f => f.fieldname === imageOrPlaceholder.file);
                 if (file) {
                     const newImageUrl = await uploadImageToS3(file.buffer, file.originalname, 'pages', req.user.userId);
-                    return { file: newImageUrl }; // 프론트엔드가 기대하는 { file: 'URL' } 형태로 반환
+                    return { file: newImageUrl }; 
                 }
                 return null;
             }));
@@ -2716,12 +2472,10 @@ router.put('/site-content', authMiddleware, checkPermission(['super_admin']), up
     }
 });
 
-// DELETE /api/admin/users/:id - 특정 사용자 삭제
 router.delete('/users/:id', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     const { id } = req.params;
     const adminId = req.user.userId;
 
-    // 관리자 본인 계정은 삭제할 수 없도록 방지
     if (parseInt(id, 10) === adminId) {
         return res.status(403).json({ success: false, message: '자기 자신의 계정은 삭제할 수 없습니다.' });
     }
@@ -2737,19 +2491,16 @@ router.delete('/users/:id', authMiddleware, checkPermission(['super_admin']), as
 
     } catch (error) {
         console.error("관리자 회원 삭제 에러:", error);
-        if (error.code === '23503') { // foreign_key_violation
+        if (error.code === '23503') {
              return res.status(400).json({ success: false, message: '해당 사용자는 다른 데이터(진단 이력, 게시물 등)와 연결되어 있어 삭제할 수 없습니다.' });
         }
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
 });
 
-// --- ▼▼▼ 프로그램 신청 현황 관리 API 추가 ▼▼▼ ---
 
-// GET /api/admin/applications - 모든 프로그램 신청 현황 조회
 router.get('/applications', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     try {
-        // 여러 테이블을 JOIN하여 필요한 모든 정보를 한 번에 가져옵니다.
         const query = `
             SELECT 
                 ua.id,
@@ -2777,12 +2528,10 @@ router.get('/applications', authMiddleware, checkPermission(['super_admin', 'vic
     }
 });
 
-// PUT /api/admin/applications/:id/status - 프로그램 신청 상태 변경 및 알림 생성 API
 router.put('/applications/:id/status', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'user_manager']), async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
 
-    // 유효한 상태 값인지 확인
     if (!['접수', '진행', '완료'].includes(status)) {
         return res.status(400).json({ success: false, message: '유효하지 않은 상태 값입니다.' });
     }
@@ -2791,20 +2540,17 @@ router.put('/applications/:id/status', authMiddleware, checkPermission(['super_a
     try {
         await client.query('BEGIN');
 
-        // 1. 신청 상태 업데이트
         const updateRes = await client.query('UPDATE user_applications SET status = $1 WHERE id = $2 RETURNING user_id, program_id', [status, id]);
         if (updateRes.rows.length === 0) {
             throw new Error('해당 신청 내역을 찾을 수 없습니다.');
         }
 
-        // 2. 알림 생성을 위한 정보 가져오기
         const { user_id, program_id } = updateRes.rows[0];
         const programRes = await client.query('SELECT title FROM esg_programs WHERE id = $1', [program_id]);
         const programTitle = programRes.rows[0].title;
 
-        // 3. 알림 메시지 생성 및 DB에 저장
         const message = `신청하신 '${programTitle}' 프로그램의 진행 상태가 [${status}](으)로 변경되었습니다.`;
-        const link_url = '/mypage_program.html'; // 사용자가 확인할 페이지 경로
+        const link_url = '/mypage_program.html';
 
         await client.query(
             'INSERT INTO notifications (user_id, message, link_url) VALUES ($1, $2, $3)',
@@ -2823,16 +2569,6 @@ router.put('/applications/:id/status', authMiddleware, checkPermission(['super_a
     }
 });
 
-// =================================================================
-// ▼▼▼ 맞춤형 프로그램 관리 API (신규 추가) ▼▼▼
-// =================================================================
-
-/**
- * @api {post} /api/admin/users/:userId/assign-program
- * @description [신규] 특정 고객사에게 맞춤형 프로그램을 할당하고 신청(application) 레코드를 생성하는 API
- * @permission super_admin, vice_super_admin, user_manager
- * @body { program_id: number, admin_message: string }
- */
 router.post(
     '/users/:userId/assign-program',
     authMiddleware,
@@ -2846,12 +2582,11 @@ router.post(
         }
 
         try {
-            // user_applications 테이블에 'assigned'(할당됨) 상태로 신청 기록을 생성합니다.
             const applicationResult = await db.query(
                 `INSERT INTO user_applications (user_id, program_id, status, admin_message)
                  VALUES ($1, $2, 'assigned', $3)
                  RETURNING id`,
-                [userId, program_id, admin_message || ''] // 맞춤 메시지는 없을 수도 있음
+                [userId, program_id, admin_message || ''] 
             );
             const newApplicationId = applicationResult.rows[0].id;
 
@@ -2867,11 +2602,7 @@ router.post(
     }
 );
 
-/**
- * @api {get} /api/admin/applications/:applicationId/milestones
- * @description [신규] 특정 신청 건에 대한 마일스톤 목록과 완료 여부를 조회하는 API
- * @permission super_admin, vice_super_admin, user_manager
- */
+
 router.get(
     '/applications/:applicationId/milestones',
     authMiddleware,
@@ -2879,14 +2610,12 @@ router.get(
     async (req, res) => {
         const { applicationId } = req.params;
         try {
-            // 1. 신청 정보에서 user_id를 찾습니다.
             const appRes = await db.query('SELECT user_id FROM user_applications WHERE id = $1', [applicationId]);
             if (appRes.rows.length === 0) {
                 return res.status(404).json({ success: false, message: '신청 정보를 찾을 수 없습니다.' });
             }
             const userId = appRes.rows[0].user_id;
 
-            // 2. 해당 사용자의 가장 최근 진단 ID와 "모든 답변 점수"를 한 번에 가져옵니다.
             const diagRes = await db.query(`SELECT id FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]);
             const latestDiagnosisId = diagRes.rows.length > 0 ? diagRes.rows[0].id : null;
 
@@ -2896,11 +2625,9 @@ router.get(
                 userScoresMap = new Map(userScoresRes.rows.map(r => [r.question_code, r.score]));
             }
 
-            // 3. 마일스톤 정보를 가져옵니다.
             const milestonesRes = await db.query('SELECT * FROM application_milestones WHERE application_id = $1 ORDER BY display_order ASC, id ASC', [applicationId]);
             const milestones = milestonesRes.rows;
 
-            // 4. 가져온 마일스톤 정보에 "현재 점수" 데이터를 추가합니다.
             for (const milestone of milestones) {
                 milestone.linked_questions_with_scores = [];
                 if (Array.isArray(milestone.linked_question_codes)) {
@@ -2914,7 +2641,7 @@ router.get(
             res.status(200).json({ 
                 success: true, 
                 milestones: milestones,
-                allUserScores: Object.fromEntries(userScoresMap) // 프론트엔드에서 동적으로 점수를 표시하기 위한 전체 점수 데이터
+                allUserScores: Object.fromEntries(userScoresMap) 
             });
 
         } catch (error) {
@@ -2924,11 +2651,7 @@ router.get(
     }
 );
 
-/**
- * @api {post} /api/admin/applications/:applicationId/milestones/:milestoneId/complete
- * @description [신규] 관리자가 특정 마일스톤을 '완료' 처리하는 API
- * @permission super_admin, vice_super_admin, user_manager
- */
+
 router.post(
     '/applications/:applicationId/milestones/:milestoneId/complete',
     authMiddleware,
@@ -2937,14 +2660,12 @@ router.post(
         const { applicationId, milestoneId } = req.params;
 
         try {
-            // user_id를 application_id를 통해 조회 (user_milestone_completions 테이블에 필요)
             const appInfo = await db.query('SELECT user_id FROM user_applications WHERE id = $1', [applicationId]);
             if (appInfo.rows.length === 0) {
                 return res.status(404).json({ success: false, message: '신청 내역을 찾을 수 없습니다.' });
             }
             const userId = appInfo.rows[0].user_id;
 
-            // 이미 완료되었는지 중복 확인
             const checkResult = await db.query(
                 'SELECT id FROM user_milestone_completions WHERE application_id = $1 AND milestone_id = $2',
                 [applicationId, milestoneId]
@@ -2954,7 +2675,6 @@ router.post(
                 return res.status(409).json({ success: false, message: '이미 완료 처리된 마일스톤입니다.' });
             }
 
-            // user_milestone_completions 테이블에 완료 기록 추가
             await db.query(
                 'INSERT INTO user_milestone_completions (user_id, application_id, milestone_id) VALUES ($1, $2, $3)',
                 [userId, applicationId, milestoneId]
@@ -2968,14 +2688,6 @@ router.post(
     }
 );
 
-// =================================================================
-// ▼▼▼ [V2] 사용자 맞춤형 마일스톤 관리 API (신규) ▼▼▼
-// =================================================================
-
-/**
- * @api {get} /api/admin/my-programs
- * @description (로그인된 콘텐츠 매니저가) "자신이 생성한" 프로그램 목록만 조회합니다.
- */
 router.get(
     '/my-programs',
     authMiddleware,
@@ -2985,7 +2697,6 @@ router.get(
             const { userId, role } = req.user;
             let query = 'SELECT id, title FROM esg_programs';
             const values = [];
-            // 슈퍼관리자가 아니면, 자기가 만든 프로그램만 조회
             if (role !== 'super_admin' && role !== 'vice_super_admin') {
                 query += ' WHERE author_id = $1';
                 values.push(userId);
@@ -2999,10 +2710,7 @@ router.get(
     }
 );
 
-/**
- * @api {get} /api/admin/programs/:programId/applications
- * @description 특정 프로그램을 "신청한" 사용자(신청 건) 목록을 조회합니다.
- */
+
 router.get(
     '/programs/:programId/applications',
     authMiddleware,
@@ -3024,10 +2732,7 @@ router.get(
     }
 );
 
-/**
- * @api {get} /api/admin/survey-questions/all
- * @description 모든 진단 질문(코드, 전체 텍스트) 목록을 조회합니다.
- */
+
 router.get(
     '/survey-questions/all',
     authMiddleware,
@@ -3042,10 +2747,7 @@ router.get(
     }
 );
 
-/**
- * @api {get} /api/admin/applications/:applicationId/milestones
- * @description "특정 신청 건"에 대한 마일스톤 목록을 조회합니다.
- */
+
 router.get(
     '/applications/:applicationId/milestones',
     authMiddleware,
@@ -3060,14 +2762,12 @@ router.get(
             const diagRes = await db.query(`SELECT id FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]);
             const latestDiagnosisId = diagRes.rows.length > 0 ? diagRes.rows[0].id : null;
 
-            // 마일스톤 정보를 가져오는 기본 쿼리
             const milestonesRes = await db.query('SELECT * FROM application_milestones WHERE application_id = $1 ORDER BY display_order ASC', [applicationId]);
             const milestones = milestonesRes.rows;
 
-            // 각 마일스톤에 연결된 질문들의 점수를 찾아서 추가
             if (latestDiagnosisId && milestones.length > 0) {
                 for (const milestone of milestones) {
-                    milestone.linked_questions_with_scores = []; // 결과를 담을 배열 초기화
+                    milestone.linked_questions_with_scores = []; 
                     if (milestone.linked_question_codes && milestone.linked_question_codes.length > 0) {
                         const scoreQuery = `
                             SELECT question_code, score FROM diagnosis_answers
@@ -3076,10 +2776,9 @@ router.get(
                         const scoresRes = await db.query(scoreQuery, [latestDiagnosisId, milestone.linked_question_codes]);
                         const scoresMap = new Map(scoresRes.rows.map(r => [r.question_code, r.score]));
                         
-                        // 원래 질문 코드 배열을 순회하며 점수를 매핑
                         milestone.linked_questions_with_scores = milestone.linked_question_codes.map(code => ({
                             code: code,
-                            score: scoresMap.get(code) ?? 'N/A' // 답변이 없으면 'N/A'
+                            score: scoresMap.get(code) ?? 'N/A' 
                         }));
                     }
                 }
@@ -3093,10 +2792,7 @@ router.get(
     }
 );
 
-/**
- * @api {post} /api/admin/applications/:applicationId/milestones
- * @description "특정 신청 건"에 새 마일스톤을 추가합니다. (파일 제외)
- */
+
 router.post(
     '/applications/:applicationId/milestones',
     authMiddleware,
@@ -3116,13 +2812,7 @@ router.post(
     }
 );
 
-// =================================================================
-// ▼▼▼ [V2] 사용자 맞춤형 마일스톤 "일괄 저장" API (신규) ▼▼▼
-// =================================================================
-/**
- * @api {post} /api/admin/applications/:applicationId/milestones/batch-update
- * @description "특정 신청 건"의 모든 마일스톤 변경사항(추가/수정/삭제/파일)을 한 번에 저장합니다.
- */
+
 router.post(
     '/applications/:applicationId/milestones/batch-update',
     authMiddleware,
@@ -3146,30 +2836,25 @@ router.post(
                 let imageUrl = milestone.image_url || null;
                 let attachmentUrl = milestone.attachment_url || null;
 
-                // --- 이미지 파일 처리 ---
                 if (milestone.imagePlaceholder) {
                     const imageFile = req.files.find(f => f.fieldname === milestone.imagePlaceholder);
                     if (imageFile) {
                         const oldData = existingMilestonesMap.get(milestone.id);
                         if (oldData && oldData.imageUrl) await deleteImageFromS3(oldData.imageUrl);
-                        // 이미지 전용 함수 호출
                         imageUrl = await uploadImageToS3(imageFile.buffer, imageFile.originalname, 'milestones/images', req.user.userId);
                     }
                 }
 
-                // --- 첨부 문서 처리 ---
                 if (milestone.attachmentPlaceholder) {
                     const attachmentFile = req.files.find(f => f.fieldname === milestone.attachmentPlaceholder);
                     if (attachmentFile) {
                         const oldData = existingMilestonesMap.get(milestone.id);
                         if (oldData && oldData.attachmentUrl) await deleteImageFromS3(oldData.attachmentUrl);
-                        // ✅ 문서 전용 함수 호출
                         attachmentUrl = await uploadFileToS3(attachmentFile.buffer, attachmentFile.originalname, 'milestones/attachments', req.user.userId);
                     }
                 }
 
                 if (milestone.id === 'new') {
-                    // INSERT 쿼리 (image_url 포함)
                     const query = `
                         INSERT INTO application_milestones 
                         (application_id, milestone_name, score_value, improvement_category, content, display_order, image_url, attachment_url) 
@@ -3180,7 +2865,6 @@ router.post(
                     const milestoneId = parseInt(milestone.id, 10);
                     receivedMilestoneIds.add(milestoneId);
                     
-                    // UPDATE 쿼리 (image_url 포함)
                     const query = `
                         UPDATE application_milestones 
                         SET milestone_name=$1, score_value=$2, improvement_category=$3, content=$4, display_order=$5, image_url=$6, attachment_url=$7, updated_at=NOW() 
@@ -3190,7 +2874,6 @@ router.post(
                 }
             }
             
-            // 삭제된 마일스톤의 파일들도 S3에서 제거
             for (const [existingId, existingUrls] of existingMilestonesMap.entries()) {
                 if (!receivedMilestoneIds.has(existingId)) {
                     if (existingUrls.imageUrl) await deleteImageFromS3(existingUrls.imageUrl);
@@ -3212,20 +2895,12 @@ router.post(
     }
 );
 
-// =================================================================
-// ▼▼▼ 규제 타임라인 관리 API (신규 추가) ▼▼▼
-// =================================================================
 
-/**
- * @api {get} /api/admin/regulations
- * @description 모든 규제 정보 목록을 조회합니다.
- */
 router.get(
-    '/regulations', // '/admin'이 없는 사용자용 경로
-    authMiddleware, // 로그인은 필요하지만, 특정 권한은 체크하지 않음
+    '/regulations', 
+    authMiddleware,
     async (req, res) => {
         try {
-            // 시행일이 빠른 순서로 정렬하여 모든 규제를 반환
             const { rows } = await db.query('SELECT * FROM regulations ORDER BY effective_date ASC');
             res.status(200).json({ success: true, regulations: rows });
         } catch (error) {
@@ -3235,10 +2910,7 @@ router.get(
     }
 );
 
-/**
- * @api {post} /api/admin/regulations
- * @description 새로운 규제 정보를 추가합니다.
- */
+
 router.post(
     '/regulations',
     authMiddleware,
@@ -3258,10 +2930,7 @@ router.post(
     }
 );
 
-/**
- * @api {put} /api/admin/regulations/:id
- * @description 특정 규제 정보를 수정합니다.
- */
+
 router.put(
     '/regulations/:id',
     authMiddleware,
@@ -3287,10 +2956,7 @@ router.put(
     }
 );
 
-/**
- * @api {delete} /api/admin/regulations/:id
- * @description 특정 규제 정보를 삭제합니다.
- */
+
 router.delete(
     '/regulations/:id',
     authMiddleware,
@@ -3309,6 +2975,5 @@ router.delete(
         }
     }
 );
-
 
 module.exports = router;

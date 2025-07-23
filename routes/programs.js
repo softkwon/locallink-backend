@@ -3,36 +3,28 @@ const express = require('express');
 const db = require('../db');
 const router = express.Router();
 
-/**
- * 프로그램 데이터의 모든 JSON 필드를 파싱하고, 이미지 경로를 전체 URL로 변환하는 통합 함수
- * @param {object} program - DB에서 가져온 프로그램 데이터 한 줄
- * @returns {object} - 모든 경로와 JSON이 처리된 프로그램 객체
- */
 const processProgramData = (program) => {
     if (!program) return program;
 
     const newProgram = { ...program };
     const jsonFields = ['content', 'economic_effects', 'related_links', 'opportunity_effects'];
 
-    // 1. 문자열 상태인 JSON 필드를 모두 실제 객체/배열로 변환
     jsonFields.forEach(field => {
         if (newProgram[field] && typeof newProgram[field] === 'string') {
             try {
                 newProgram[field] = JSON.parse(newProgram[field]);
             } catch (e) {
                 console.error(`Error parsing JSON for field ${field} in program ${newProgram.id}:`, e);
-                newProgram[field] = []; // 파싱 오류 시 빈 배열로 초기화
+                newProgram[field] = []; 
             }
         }
     });
 
-    // 2. content 안의 이미지 경로를 전체 URL로 변환
     if (newProgram.content && Array.isArray(newProgram.content)) {
         newProgram.content.forEach(section => {
             if (section.images && Array.isArray(section.images)) {
                 section.images = section.images.map(path => {
                     if (path && !path.startsWith('http')) {
-                        // 서버 환경변수에 설정된 올바른 S3 주소를 사용합니다.
                         return `${process.env.STATIC_BASE_URL}/${path}`;
                     }
                     return path;
@@ -44,44 +36,22 @@ const processProgramData = (program) => {
     return newProgram;
 };
 
-// GET /api/programs - 발행된 모든 프로그램 목록 조회 (공개용)
 router.get('/', async (req, res) => {
     try {
-        const query = "SELECT * FROM esg_programs WHERE status = 'published' ORDER BY id ASC";
+        const query = `
+            SELECT p.*, COALESCE(sc.categories, '[]'::json) as solution_categories
+            FROM esg_programs p
+            LEFT JOIN (
+                SELECT psc.program_id, json_agg(sc.category_name) as categories
+                FROM program_solution_categories psc
+                JOIN solution_categories sc ON psc.category_id = sc.id
+                GROUP BY psc.program_id
+            ) sc ON p.id = sc.program_id
+            WHERE p.status = 'published'
+            ORDER BY p.id ASC
+        `;
         const { rows } = await db.query(query);
-
-        // ★★★ 각 프로그램의 데이터를 직접 처리합니다. ★★★
-        const processedPrograms = rows.map(program => {
-            if (!program) return program;
-            
-            const jsonFields = ['content', 'economic_effects', 'related_links', 'opportunity_effects'];
-            // 1. JSON 문자열들을 실제 객체/배열로 변환
-            jsonFields.forEach(field => {
-                if (program[field] && typeof program[field] === 'string') {
-                    try {
-                        program[field] = JSON.parse(program[field]);
-                    } catch {
-                        program[field] = []; // 오류 발생 시 빈 배열로 처리
-                    }
-                }
-            });
-
-            // 2. 이미지 경로를 전체 URL로 변환
-            if (program.content && Array.isArray(program.content)) {
-                program.content.forEach(section => {
-                    if (section.images && Array.isArray(section.images)) {
-                        section.images = section.images.map(path => {
-                            if (path && !path.startsWith('http')) {
-                                return `${process.env.STATIC_BASE_URL}/${path}`;
-                            }
-                            return path;
-                        });
-                    }
-                });
-            }
-            return program;
-        });
-
+        const processedPrograms = rows.map(processProgramData);
         res.status(200).json({ success: true, programs: processedPrograms });
     } catch (error) {
         console.error("공개용 프로그램 목록 조회 에러:", error);
@@ -89,66 +59,57 @@ router.get('/', async (req, res) => {
     }
 });
 
-// GET /api/programs/:id - 특정 프로그램 상세 정보 조회 (공개용)
 router.get('/:id', async (req, res) => {
     const { id } = req.params;
     try {
-        const query = "SELECT * FROM esg_programs WHERE id = $1 AND status = 'published'";
+        const query = `
+            SELECT p.*, COALESCE(sc.categories, '[]'::json) as solution_categories
+            FROM esg_programs p
+            LEFT JOIN (
+                SELECT psc.program_id, json_agg(sc.category_name) as categories
+                FROM program_solution_categories psc
+                JOIN solution_categories sc ON psc.category_id = sc.id
+                GROUP BY psc.program_id
+            ) sc ON p.id = sc.program_id
+            WHERE p.id = $1 AND p.status = 'published'
+        `;
         const { rows } = await db.query(query, [id]);
         if (rows.length === 0) {
             return res.status(404).json({ success: false, message: "프로그램을 찾을 수 없습니다." });
         }
         
-        let program = rows[0];
-
-        // --- ★★★ 직접 데이터 처리 (가장 중요) ★★★ ---
-        const jsonFields = ['content', 'economic_effects', 'related_links', 'opportunity_effects'];
-        
-        // 1. JSON 문자열들을 실제 객체/배열로 변환
-        jsonFields.forEach(field => {
-            if (program[field] && typeof program[field] === 'string') {
-                try {
-                    program[field] = JSON.parse(program[field]);
-                } catch {
-                    program[field] = []; // 오류 발생 시 빈 배열로 처리
-                }
-            }
-        });
-
-        // 2. 이미지 경로를 전체 URL로 변환
-        if (program.content && Array.isArray(program.content)) {
-            program.content.forEach(section => {
-                if (section.images && Array.isArray(section.images)) {
-                    section.images = section.images.map(path => {
-                        if (path && !path.startsWith('http')) {
-                            return `${process.env.STATIC_BASE_URL}/${path}`;
-                        }
-                        return path;
-                    });
-                }
-            });
-        }
-        // --- ★★★ 데이터 처리 끝 ★★★ ---
-
+        const program = processProgramData(rows[0]);
         res.status(200).json({ success: true, program: program });
-
     } catch (error) {
         console.error(`공개용 프로그램 상세 조회 에러 (ID: ${id}):`, error);
         res.status(500).json({ success: false, message: "서버 에러가 발생했습니다." });
     }
 });
 
-// POST /api/programs/batch-details - 여러 프로그램 상세 정보 조회
 router.post('/batch-details', async (req, res) => {
     const { programIds } = req.body;
     if (!programIds || !Array.isArray(programIds) || programIds.length === 0) {
         return res.status(200).json({ success: true, programs: [] });
     }
     try {
-        const query = 'SELECT * FROM esg_programs WHERE id = ANY($1::int[])';
+        const query = `
+            SELECT p.*, COALESCE(sc.categories, '[]'::json) as solution_categories
+            FROM esg_programs p
+            LEFT JOIN (
+                SELECT psc.program_id, json_agg(sc.category_name) as categories
+                FROM program_solution_categories psc
+                JOIN solution_categories sc ON psc.category_id = sc.id
+                GROUP BY psc.program_id
+            ) sc ON p.id = sc.program_id
+            WHERE p.id = ANY($1::int[])
+        `;
         const { rows } = await db.query(query, [programIds]);
-        const processedPrograms = rows.map(processProgramData);
+
+        const sortedRows = programIds.map(id => rows.find(row => row.id === id)).filter(Boolean);
+        
+        const processedPrograms = sortedRows.map(processProgramData);
         res.status(200).json({ success: true, programs: processedPrograms });
+
     } catch (error) {
         console.error("배치 상세 조회 에러:", error);
         res.status(500).json({ success: false, message: '서버 에러' });
