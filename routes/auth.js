@@ -160,9 +160,12 @@ router.post('/login', async (req, res) => {
 
     // 5. 로그인 성공 응답 (토큰 포함)
     res.status(200).json({
-      success: true,
-      message: '로그인 성공!',
-      token: token 
+        success: true,
+        message: '로그인 성공!',
+        token: token,
+        user: {
+            company_name: user.company_name
+        }
     });
 
   } catch (error) {
