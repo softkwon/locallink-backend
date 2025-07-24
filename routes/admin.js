@@ -749,18 +749,14 @@ router.post(
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     upload.any(),
-    async (req, res) => {
-    
+    async (req, res) => {    
         const client = await db.pool.connect();
         try {
             await client.query('BEGIN');
-
             const { content, ...otherBodyFields } = req.body;
-            const parsedContent = JSON.parse(content);
-            
+            const parsedContent = JSON.parse(content);            
             const finalContent = await Promise.all(parsedContent.map(async (section) => {
                 if (!section.images || section.images.length === 0) return section;
-
                 const updatedImages = await Promise.all(section.images.map(async (placeholder) => {
                     const file = req.files.find(f => f.fieldname === placeholder);
                     if (file) {
@@ -775,15 +771,17 @@ router.post(
                 INSERT INTO esg_programs (
                     title, program_code, esg_category, program_overview, content, 
                     economic_effects, related_links, risk_text, risk_description, 
-                    opportunity_effects, service_regions, execution_type, status
+                    opportunity_effects, service_regions, execution_type, status,
+                    potential_e, potential_s, potential_g
                 ) 
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id;
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING id;
             `;
             const programValues = [
                 otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
                 JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
                 otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
-                otherBodyFields.service_regions.split(','), otherBodyFields.execution_type, 'draft' // status 기본값
+                otherBodyFields.service_regions.split(','), otherBodyFields.execution_type, 'draft',
+                otherBodyFields.potential_e || 0, otherBodyFields.potential_s || 0, otherBodyFields.potential_g || 0
             ];
             
             const programResult = await client.query(programQuery, programValues);
@@ -821,7 +819,6 @@ router.post(
         }
     }
 );
-
 
 router.put(
     '/programs/:id',
@@ -866,40 +863,34 @@ router.put(
             if (imagesToDelete.length > 0) {
                 await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
             }
-
+            
             const programQuery = `
                 UPDATE esg_programs SET 
                     title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, 
                     economic_effects = $6, related_links = $7, risk_text = $8, risk_description = $9, 
-                    opportunity_effects = $10, service_regions = $11, execution_type = $12, updated_at = NOW()
-                WHERE id = $13;
+                    opportunity_effects = $10, service_regions = $11, execution_type = $12,
+                    potential_e = $13, potential_s = $14, potential_g = $15, updated_at = NOW()
+                WHERE id = $16;
             `;
             const programValues = [
                 otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
                 JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
                 otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
-                otherBodyFields.service_regions.split(','), otherBodyFields.execution_type, id
+                otherBodyFields.service_regions.split(','), otherBodyFields.execution_type,
+                otherBodyFields.potential_e || 0, otherBodyFields.potential_s || 0, otherBodyFields.potential_g || 0,
+                id
             ];
             await client.query(programQuery, programValues);
 
             const solutionCategories = otherBodyFields.solution_categories ? otherBodyFields.solution_categories.split(',') : [];
-
             await client.query('DELETE FROM program_solution_categories WHERE program_id = $1', [id]);
-
             if (solutionCategories.length > 0) {
-                const categoryRes = await client.query(
-                    'SELECT id, category_name FROM solution_categories WHERE category_name = ANY($1::text[])',
-                    [solutionCategories]
-                );
+                const categoryRes = await client.query('SELECT id, category_name FROM solution_categories WHERE category_name = ANY($1::text[])', [solutionCategories]);
                 const categoryMap = new Map(categoryRes.rows.map(row => [row.category_name, row.id]));
-
                 for (const categoryName of solutionCategories) {
                     const categoryId = categoryMap.get(categoryName);
                     if (categoryId) {
-                        await client.query(
-                            'INSERT INTO program_solution_categories (program_id, category_id) VALUES ($1, $2)',
-                            [id, categoryId]
-                        );
+                        await client.query('INSERT INTO program_solution_categories (program_id, category_id) VALUES ($1, $2)', [id, categoryId]);
                     }
                 }
             }

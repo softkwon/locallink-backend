@@ -39,7 +39,10 @@ const processProgramData = (program) => {
 router.get('/', async (req, res) => {
     try {
         const query = `
-            SELECT p.*, COALESCE(sc.categories, '[]'::json) as solution_categories
+            SELECT 
+                p.id, p.title, p.program_overview, p.content, p.service_regions,
+                p.potential_e, p.potential_s, p.potential_g,
+                COALESCE(sc.categories, '[]'::json) as solution_categories
             FROM esg_programs p
             LEFT JOIN (
                 SELECT psc.program_id, json_agg(sc.category_name) as categories
@@ -63,7 +66,12 @@ router.get('/:id', async (req, res) => {
     const { id } = req.params;
     try {
         const query = `
-            SELECT p.*, COALESCE(sc.categories, '[]'::json) as solution_categories
+            SELECT 
+                p.id, p.title, p.program_code, p.esg_category, p.program_overview, p.content, 
+                p.economic_effects, p.related_links, p.risk_text, p.risk_description, 
+                p.opportunity_effects, p.service_regions, p.execution_type, p.status,
+                p.potential_e, p.potential_s, p.potential_g,
+                COALESCE(sc.categories, '[]'::json) as solution_categories
             FROM esg_programs p
             LEFT JOIN (
                 SELECT psc.program_id, json_agg(sc.category_name) as categories
@@ -74,12 +82,14 @@ router.get('/:id', async (req, res) => {
             WHERE p.id = $1 AND p.status = 'published'
         `;
         const { rows } = await db.query(query, [id]);
+        
         if (rows.length === 0) {
             return res.status(404).json({ success: false, message: "프로그램을 찾을 수 없습니다." });
         }
         
         const program = processProgramData(rows[0]);
         res.status(200).json({ success: true, program: program });
+
     } catch (error) {
         console.error(`공개용 프로그램 상세 조회 에러 (ID: ${id}):`, error);
         res.status(500).json({ success: false, message: "서버 에러가 발생했습니다." });
@@ -93,7 +103,12 @@ router.post('/batch-details', async (req, res) => {
     }
     try {
         const query = `
-            SELECT p.*, COALESCE(sc.categories, '[]'::json) as solution_categories
+            SELECT 
+                p.id, p.title, p.program_code, p.esg_category, p.program_overview, p.content, 
+                p.economic_effects, p.related_links, p.risk_text, p.risk_description, 
+                p.opportunity_effects, p.service_regions, p.execution_type, p.status,
+                p.potential_e, p.potential_s, p.potential_g,
+                COALESCE(sc.categories, '[]'::json) as solution_categories
             FROM esg_programs p
             LEFT JOIN (
                 SELECT psc.program_id, json_agg(sc.category_name) as categories
