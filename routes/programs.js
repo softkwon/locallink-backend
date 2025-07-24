@@ -40,7 +40,9 @@ router.get('/', async (req, res) => {
     try {
         const query = `
             SELECT 
-                p.id, p.title, p.program_overview, p.content, p.service_regions,
+                p.id, p.title, p.program_code, p.esg_category, p.program_overview, p.content, 
+                p.economic_effects, p.related_links, p.risk_text, p.risk_description, 
+                p.opportunity_effects, p.service_regions, p.execution_type, p.status,
                 p.potential_e, p.potential_s, p.potential_g,
                 COALESCE(sc.categories, '[]'::json) as solution_categories
             FROM esg_programs p
