@@ -44,6 +44,7 @@ router.get('/', async (req, res) => {
                 p.economic_effects, p.related_links, p.risk_text, p.risk_description, 
                 p.opportunity_effects, p.service_regions, p.execution_type, p.status,
                 p.potential_e, p.potential_s, p.potential_g,
+                p.existing_cost_details, p.service_costs,
                 COALESCE(sc.categories, '[]'::json) as solution_categories
             FROM esg_programs p
             LEFT JOIN (
@@ -73,7 +74,7 @@ router.get('/:id', async (req, res) => {
                 p.economic_effects, p.related_links, p.risk_text, p.risk_description, 
                 p.opportunity_effects, p.service_regions, p.execution_type, p.status,
                 p.potential_e, p.potential_s, p.potential_g,
-                p.existing_cost, p.service_costs,
+                p.existing_cost_details, p.service_costs,
                 COALESCE(sc.categories, '[]'::json) as solution_categories
             FROM esg_programs p
             LEFT JOIN (
@@ -111,6 +112,7 @@ router.post('/batch-details', async (req, res) => {
                 p.economic_effects, p.related_links, p.risk_text, p.risk_description, 
                 p.opportunity_effects, p.service_regions, p.execution_type, p.status,
                 p.potential_e, p.potential_s, p.potential_g,
+                p.existing_cost_details, p.service_costs,
                 COALESCE(sc.categories, '[]'::json) as solution_categories
             FROM esg_programs p
             LEFT JOIN (

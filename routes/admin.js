@@ -773,18 +773,18 @@ router.post(
                     economic_effects, related_links, risk_text, risk_description, 
                     opportunity_effects, service_regions, execution_type, status,
                     potential_e, potential_s, potential_g,
-                    existing_cost, service_costs
+                    existing_cost_details, service_costs
                 ) 
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id;
             `;
             const programValues = [
                 otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
-                JSON.stringify(finalContent), 
-                otherBodyFields.economic_effects, otherBodyFields.related_links,
+                JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
                 otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
                 otherBodyFields.service_regions.split(','), otherBodyFields.execution_type, 'draft',
                 otherBodyFields.potential_e || 0, otherBodyFields.potential_s || 0, otherBodyFields.potential_g || 0,
-                otherBodyFields.existing_cost || null, otherBodyFields.service_costs || '[]'
+                otherBodyFields.existing_cost_details || null, 
+                otherBodyFields.service_costs || '[]'
             ];
             
             const programResult = await client.query(programQuery, programValues);
@@ -873,17 +873,17 @@ router.put(
                     economic_effects = $6, related_links = $7, risk_text = $8, risk_description = $9, 
                     opportunity_effects = $10, service_regions = $11, execution_type = $12,
                     potential_e = $13, potential_s = $14, potential_g = $15, 
-                    existing_cost = $16, service_costs = $17, updated_at = NOW()
+                    existing_cost_details = $16, service_costs = $17, updated_at = NOW()
                 WHERE id = $18;
             `;
             const programValues = [
                 otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
-                JSON.stringify(finalContent), 
-                otherBodyFields.economic_effects, otherBodyFields.related_links,
+                JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
                 otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
                 otherBodyFields.service_regions.split(','), otherBodyFields.execution_type,
                 otherBodyFields.potential_e || 0, otherBodyFields.potential_s || 0, otherBodyFields.potential_g || 0,
-                otherBodyFields.existing_cost || null, otherBodyFields.service_costs || '[]',
+                otherBodyFields.existing_cost_details || null, 
+                otherBodyFields.service_costs || '[]',
                 id
             ];
             await client.query(programQuery, programValues);
