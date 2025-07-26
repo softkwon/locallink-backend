@@ -1,11 +1,8 @@
-// routes/strategy.js
-
 const express = require('express');
 const db = require('../db');
 const authMiddleware = require('../middleware/authMiddleware');
 const router = express.Router();
 
-// GET /api/strategy/:diagnosisId - 특정 진단에 대한 맞춤형 전략 생성
 router.get('/:diagnosisId', authMiddleware, async (req, res) => {
     const { diagnosisId } = req.params;
     const { userId } = req.user;
@@ -33,10 +30,19 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
         const region = diagnosis.business_location;
         const companySizeCode = diagnosis.company_size;
 
-        const locationMap = { '서울': '서울특별시', '부산': '부산광역시', /* ... 등등 ... */ };
+        const locationMap = {
+            '서울': '서울특별시', '부산': '부산광역시', '대구': '대구광역시', 
+            '인천': '인천광역시', '광주': '광주광역시', '대전': '대전광역시',
+            '울산': '울산광역시', '세종': '세종특별자치시', '경기': '경기도',
+            '강원': '강원특별자치도', '충북': '충청북도', '충남': '충청남도',
+            '전북': '전북특별자치도', '전남': '전라남도', '경북': '경상북도',
+            '경남': '경상남도', '제주': '제주특별자치도'
+        };
         diagnosis.business_location_text = locationMap[region] || region;
 
-        const sizeTranslationMap = { 'large': '대기업', 'medium': '중견기업', 'small_medium': '중소기업', 'small_micro': '소기업/소상공인' };
+        const sizeTranslationMap = {
+            'large': '대기업', 'medium': '중견기업', 'small_medium': '중소기업', 'small_micro': '소기업/소상공인'
+        };
         const companySizeKey = sizeTranslationMap[companySizeCode];
 
         // --- 3. 필요한 모든 데이터를 병렬로 조회 ---
@@ -45,7 +51,7 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
             benchmarkScoresRes, 
             industryIssuesRes, 
             regionalIssuesRes, 
-            programsRes, // 이 변수에 담길 쿼리가 수정됩니다.
+            programsRes,
             questionsRes, 
             strategyRulesRes,
             industryAverageRes,
@@ -75,12 +81,54 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
         ]);
         
         const userAnswers = answersRes.rows;
-        const allPrograms = programsRes.rows; // 이제 각 프로그램에 solution_categories 배열이 포함됩니다.
+        const allPrograms = programsRes.rows;
         const allQuestions = questionsRes.rows;
         const allRules = strategyRulesRes.rows;
         const industryAverageData = industryAverageRes.rows[0] || {};
         
-        // --- 4. AI 분석 평가 데이터 가공 (기존과 동일) ---
+        // --- 4. 추천 프로그램 선정 로직 ---
+        let recommendedProgramCodes = new Set();
+        allRules.forEach(rule => {
+            let ruleMet = false;
+            const conditions = rule.conditions;
+            if (!conditions || !conditions.rules) return;
+
+            const ruleResults = conditions.rules.map(subRule => {
+                if (subRule.type === 'category_score') {
+                    const userScore = parseFloat(diagnosis[`${subRule.item.toLowerCase()}_score`]);
+                    if (subRule.operator === '<') return userScore < subRule.value;
+                    if (subRule.operator === '<=') return userScore <= subRule.value;
+                    if (subRule.operator === '>') return userScore > subRule.value;
+                    if (subRule.operator === '>=') return userScore >= subRule.value;
+                    if (subRule.operator === '==') return userScore == subRule.value;
+                }
+                if (subRule.type === 'question_score') {
+                    const userAnswer = userAnswers.find(ans => ans.question_code === subRule.item);
+                    if (userAnswer && userAnswer.score !== null) {
+                        const userAnswerScore = parseFloat(userAnswer.score);
+                        if (subRule.operator === '==') return userAnswerScore == subRule.value;
+                        if (subRule.operator === '>=') return userAnswerScore >= subRule.value;
+                        if (subRule.operator === '>') return userAnswerScore > subRule.value;
+                        if (subRule.operator === '<=') return userAnswerScore <= subRule.value;
+                        if (subRule.operator === '<') return userAnswerScore < subRule.value;
+                    }
+                }
+                return false;
+            });
+
+            if (conditions.operator === 'AND') {
+                ruleMet = ruleResults.every(res => res === true);
+            } else if (conditions.operator === 'OR') {
+                ruleMet = ruleResults.some(res => res === true);
+            }
+
+            if (ruleMet) {
+                recommendedProgramCodes.add(rule.recommended_program_code);
+            }
+        });
+        const recommendedPrograms = allPrograms.filter(p => recommendedProgramCodes.has(p.program_code));
+
+        // --- 5. AI 분석 평가 데이터 가공 ---
         const userTotalScore = parseFloat(diagnosis.total_score);
         const scoresByMainQuestion = {};
         benchmarkScoresRes.rows.forEach(item => {
@@ -104,51 +152,19 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
         let status = '비슷';
         if (percentageDiff > 10) { status = '우수'; } 
         else if (percentageDiff < -10) { status = '부족'; }
+        
+        // [추가] 추천된 프로그램들의 '솔루션 카테고리'를 중복 없이 추출
+        const uniqueRecommendedCategories = [...new Set(
+            recommendedPrograms.flatMap(p => p.solution_categories || [])
+        )];
+        
         const aiAnalysisData = {
             userName: diagnosis.company_name,
             percentageDiff, status, userTotalScore, industryAvgTotalScore,
             industryMainIssue: industryIssuesRes.rows[0]?.key_issue || '해당 산업의 주요 이슈 정보 없음',
-            regionMainIssue: regionalIssuesRes.rows[0]?.content || '아래 지도의 사안'
+            regionMainIssue: regionalIssuesRes.rows[0]?.content || '아래 지도의 사안',
+            recommendedCategories: uniqueRecommendedCategories // 추출한 카테고리 목록 추가
         };
-
-        // --- 5. 추천 프로그램 선정 로직 (기존과 동일) ---
-        let recommendedProgramCodes = new Set();
-        allRules.forEach(rule => {
-            let ruleMet = false;
-            const conditions = rule.conditions;
-            if (!conditions || !conditions.rules) return;
-            const ruleResults = conditions.rules.map(subRule => {
-                if (subRule.type === 'category_score') {
-                    const userScore = parseFloat(diagnosis[`${subRule.item.toLowerCase()}_score`]);
-                    if (subRule.operator === '<') return userScore < subRule.value;
-                    if (subRule.operator === '<=') return userScore <= subRule.value;
-                    if (subRule.operator === '>') return userScore > subRule.value;
-                    if (subRule.operator === '>=') return userScore >= subRule.value;
-                    if (subRule.operator === '==') return userScore == subRule.value;
-                }
-                if (subRule.type === 'question_score') {
-                    const userAnswer = userAnswers.find(ans => ans.question_code === subRule.item);
-                    if (userAnswer && userAnswer.score !== null) {
-                        const userAnswerScore = parseFloat(userAnswer.score);
-                        if (subRule.operator === '==') return userAnswerScore == subRule.value;
-                        if (subRule.operator === '>=') return userAnswerScore >= subRule.value;
-                        if (subRule.operator === '>') return userAnswerScore > subRule.value;
-                        if (subRule.operator === '<=') return userAnswerScore <= subRule.value;
-                        if (subRule.operator === '<') return userAnswerScore < subRule.value;
-                    }
-                }
-                return false;
-            });
-            if (conditions.operator === 'AND') {
-                ruleMet = ruleResults.every(res => res === true);
-            } else if (conditions.operator === 'OR') {
-                ruleMet = ruleResults.some(res => res === true);
-            }
-            if (ruleMet) {
-                recommendedProgramCodes.add(rule.recommended_program_code);
-            }
-        });
-        const recommendedPrograms = allPrograms.filter(p => recommendedProgramCodes.has(p.program_code));
 
         // --- 6. 최종 응답 전송 ---
         await client.query('COMMIT');
@@ -161,7 +177,7 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
                 allQuestions: allQuestions,
                 industryIssues: industryIssuesRes.rows,
                 regionalIssues: regionalIssuesRes.rows,
-                recommendedPrograms: recommendedPrograms, // 이 배열에 카테고리 정보가 포함됩니다.
+                recommendedPrograms: recommendedPrograms,
                 industryAverageData: industryAverageData,
                 aiAnalysis: aiAnalysisData,
                 companySizeIssue: companySizeIssuesRes.rows[0] || null,
