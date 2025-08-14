@@ -16,68 +16,86 @@ const saltRounds = 10;
 
 // POST /api/auth/register (회원가입) - 최종본
 router.post('/register', async (req, res) => {
-  try {
-    // 1. 요청 데이터 가져오기 (기본값 설정 포함)
-    const {
-        email, password, verificationCode, companyName, representative, address, businessLocation, managerName,
-        industryCodes = [],
-        interests = []
-    } = req.body;
-    let managerPhone = req.body.managerPhone ? req.body.managerPhone.replace(/\D/g, '') : null;
+    try {
+        // 1. 요청 데이터 가져오기 (referral_code 추가)
+        const {
+            email, password, verificationCode, companyName, representative, address, businessLocation, managerName,
+            industryCodes = [],
+            interests = [],
+            referral_code
+        } = req.body;
+        let managerPhone = req.body.managerPhone ? req.body.managerPhone.replace(/\D/g, '') : null;
 
-    // 2. 필수 값 및 인증번호 유효성 검사
-    if (!email || !password || !verificationCode) {
-      return res.status(400).json({ success: false, message: '이메일, 비밀번호, 인증코드는 필수입니다.' });
-    }
+        // 2. 필수 값 및 인증번호 유효성 검사 (기존과 동일)
+        if (!email || !password || !verificationCode) {
+            return res.status(400).json({ success: false, message: '이메일, 비밀번호, 인증코드는 필수입니다.' });
+        }
+        const stored = verificationCodes[email];
+        if (!stored || Date.now() > stored.expires || stored.code !== verificationCode) {
+             // 에러 메시지를 통합하거나, 기존처럼 상세하게 유지할 수 있습니다.
+            return res.status(400).json({ success: false, message: '인증번호가 유효하지 않습니다.' });
+        }
 
-    const stored = verificationCodes[email];
-    if (!stored) {
-        return res.status(400).json({ success: false, message: '이메일 인증을 먼저 진행해주세요.' });
-    }
-    if (Date.now() > stored.expires) {
+        // 3. 비밀번호 규칙 검사 (기존과 동일)
+        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+        if (!passwordRegex.test(password)) {
+            return res.status(400).json({
+                success: false,
+                message: '비밀번호는 8자 이상이며, 대문자, 소문자, 숫자, 특수문자를 모두 포함해야 합니다.'
+            });
+        }
+
+        // 4. 이메일 중복 가입 방지 (기존과 동일)
+        const existingUser = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+        if (existingUser.rows.length > 0) {
+            return res.status(409).json({ success: false, message: '이미 사용 중인 이메일입니다.' });
+        }
+
+        // --- 👇 [추가] 추천 코드 유효성 검증 로직 👇 ---
+        let recommendingOrgId = null;
+        if (referral_code) {
+            const codeRes = await db.query(
+                'SELECT * FROM referral_codes WHERE code = $1 AND (expires_at IS NULL OR expires_at > NOW())',
+                [referral_code]
+            );
+            if (codeRes.rows.length === 0) {
+                return res.status(400).json({ success: false, message: '유효하지 않거나 만료된 추천 코드입니다.' });
+            }
+            recommendingOrgId = codeRes.rows[0].linked_admin_id; // 추천 단체(관리자) ID 저장
+        }
+        // --- 👆 여기까지 추가 👆 ---
+
+        // 5. 모든 검증 통과 후, 사용자 정보 DB에 저장
+        const hashedPassword = await bcrypt.hash(password, 10); // saltRounds를 10으로 직접 명시
+        
+        // [수정] INSERT 쿼리에 추천 코드 관련 컬럼 추가
+        const newUserQuery = `
+            INSERT INTO users (
+                email, password, company_name, industry_codes, representative, address, 
+                business_location, manager_name, manager_phone, interests, is_verified,
+                used_referral_code, recommending_organization_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE, $11, $12)
+            RETURNING id, email, company_name;
+        `;
+        const values = [
+            email, hashedPassword, companyName, industryCodes, representative, address, 
+            businessLocation, managerName, managerPhone, interests,
+            referral_code || null, recommendingOrgId
+        ];
+        
+        await db.query(newUserQuery, values);
+
+        // 6. 사용한 인증번호는 메모리에서 삭제
         delete verificationCodes[email];
-        return res.status(400).json({ success: false, message: '인증번호가 만료되었습니다. 다시 요청해주세요.' });
+
+        // 7. 최종 성공 응답
+        res.status(201).json({ success: true, message: '회원가입이 성공적으로 완료되었습니다.' });
+
+    } catch (error) {
+        console.error('회원가입 에러:', error);
+        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
-    if (stored.code !== verificationCode) {
-        return res.status(400).json({ success: false, message: '인증번호가 올바르지 않습니다.' });
-    }
-
-    // 3. 비밀번호 규칙 검사
-    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
-    if (!passwordRegex.test(password)) {
-        return res.status(400).json({
-            success: false,
-            message: '비밀번호는 8자 이상이며, 대문자, 소문자, 숫자, 특수문자를 모두 포함해야 합니다.'
-        });
-    }
-
-    // 4. 이메일 중복 가입 방지
-    const existingUser = await db.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (existingUser.rows.length > 0) {
-      return res.status(409).json({ success: false, message: '이미 사용 중인 이메일입니다.' });
-    }
-
-    // 5. 모든 검증 통과 후, 사용자 정보 DB에 저장
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-    const newUserQuery = `
-      INSERT INTO users (email, password, company_name, industry_codes, representative, address, business_location, manager_name, manager_phone, interests, is_verified)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
-      RETURNING id, email, company_name;
-    `;
-    const values = [email, hashedPassword, companyName, industryCodes, representative, address, businessLocation, managerName, managerPhone, interests];
-    
-    await db.query(newUserQuery, values);
-
-    // 6. 사용한 인증번호는 메모리에서 삭제
-    delete verificationCodes[email];
-
-    // 7. 최종 성공 응답
-    res.status(201).json({ success: true, message: '회원가입이 성공적으로 완료되었습니다.' });
-
-  } catch (error) {
-    console.error('회원가입 에러:', error);
-    res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
-  }
 });
 
 // POST /api/auth/signup - 회원가입

@@ -11,9 +11,9 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
     try {
         await client.query('BEGIN');
 
-        // --- 1. 진단 정보와 사용자의 최신 정보를 JOIN하여 조회 ---
+        // --- 1. 진단 정보와 사용자의 추천 단체 ID를 함께 조회 ---
         const diagnosisQuery = `
-            SELECT d.*, u.business_location, u.company_name
+            SELECT d.*, u.business_location, u.company_name, u.recommending_organization_id
             FROM diagnoses d
             JOIN users u ON d.user_id = u.id
             WHERE d.id = $1 AND d.user_id = $2
@@ -73,7 +73,7 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
                 ) sc ON p.id = sc.program_id
                 WHERE p.status = 'published'
             `),
-            client.query("SELECT question_code, question_text FROM survey_questions WHERE diagnosis_type = 'simple'"),
+            client.query("SELECT question_code, question_text, esg_category FROM survey_questions WHERE diagnosis_type = 'simple'"),
             client.query('SELECT * FROM strategy_rules'),
             client.query('SELECT * FROM industry_averages WHERE industry_code = $1', [industryCode]),
             client.query('SELECT * FROM company_size_esg_issues WHERE company_size = $1', [companySizeKey]),
@@ -86,8 +86,31 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
         const allRules = strategyRulesRes.rows;
         const industryAverageData = industryAverageRes.rows[0] || {};
         
-        // --- 4. 추천 프로그램 선정 로직 ---
-        let recommendedProgramCodes = new Set();
+        // --- 4. 우선 추천 프로그램 선정 로직 ---
+        let priorityProgramList = [];
+        const priorityProgramIds = new Set();
+
+        // 4-1. 사용자의 '추천 단체'가 작성한 프로그램
+        if (diagnosis.recommending_organization_id) {
+            const partnerPrograms = allPrograms.filter(p => p.author_id === diagnosis.recommending_organization_id);
+            partnerPrograms.forEach(p => {
+                if (!priorityProgramIds.has(p.id)) {
+                    priorityProgramList.push(p);
+                    priorityProgramIds.add(p.id);
+                }
+            });
+        }
+        // 4-2. 관리자가 '우선 추천'으로 지정한 프로그램
+        const adminRecommendedPrograms = allPrograms.filter(p => p.is_admin_recommended === true);
+        adminRecommendedPrograms.forEach(p => {
+            if (!priorityProgramIds.has(p.id)) {
+                priorityProgramList.push(p);
+                priorityProgramIds.add(p.id);
+            }
+        });
+
+        // --- 5. 엔진 추천 프로그램 선정 로직 ---
+        let engineRecommendedProgramCodes = new Set();
         allRules.forEach(rule => {
             let ruleMet = false;
             const conditions = rule.conditions;
@@ -96,6 +119,7 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
             const ruleResults = conditions.rules.map(subRule => {
                 if (subRule.type === 'category_score') {
                     const userScore = parseFloat(diagnosis[`${subRule.item.toLowerCase()}_score`]);
+                    if (isNaN(userScore)) return false;
                     if (subRule.operator === '<') return userScore < subRule.value;
                     if (subRule.operator === '<=') return userScore <= subRule.value;
                     if (subRule.operator === '>') return userScore > subRule.value;
@@ -106,6 +130,7 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
                     const userAnswer = userAnswers.find(ans => ans.question_code === subRule.item);
                     if (userAnswer && userAnswer.score !== null) {
                         const userAnswerScore = parseFloat(userAnswer.score);
+                        if (isNaN(userAnswerScore)) return false;
                         if (subRule.operator === '==') return userAnswerScore == subRule.value;
                         if (subRule.operator === '>=') return userAnswerScore >= subRule.value;
                         if (subRule.operator === '>') return userAnswerScore > subRule.value;
@@ -123,12 +148,16 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
             }
 
             if (ruleMet) {
-                recommendedProgramCodes.add(rule.recommended_program_code);
+                engineRecommendedProgramCodes.add(rule.recommended_program_code);
             }
         });
-        const recommendedPrograms = allPrograms.filter(p => recommendedProgramCodes.has(p.program_code));
+        
+        // 엔진 추천 프로그램 목록 필터링 (단, 우선 추천된 프로그램은 제외)
+        const engineRecommendedPrograms = allPrograms.filter(p => 
+            engineRecommendedProgramCodes.has(p.program_code) && !priorityProgramIds.has(p.id)
+        );
 
-        // --- 5. AI 분석 평가 데이터 가공 ---
+        // --- 6. AI 분석 평가 데이터 가공 ---
         const userTotalScore = parseFloat(diagnosis.total_score);
         const scoresByMainQuestion = {};
         benchmarkScoresRes.rows.forEach(item => {
@@ -153,9 +182,9 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
         if (percentageDiff > 10) { status = '우수'; } 
         else if (percentageDiff < -10) { status = '부족'; }
         
-        // [추가] 추천된 프로그램들의 '솔루션 카테고리'를 중복 없이 추출
+        const allRecommendedPrograms = [...priorityProgramList, ...engineRecommendedPrograms];
         const uniqueRecommendedCategories = [...new Set(
-            recommendedPrograms.flatMap(p => p.solution_categories || [])
+            allRecommendedPrograms.flatMap(p => p.solution_categories || [])
         )];
         
         const aiAnalysisData = {
@@ -163,10 +192,10 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
             percentageDiff, status, userTotalScore, industryAvgTotalScore,
             industryMainIssue: industryIssuesRes.rows[0]?.key_issue || '해당 산업의 주요 이슈 정보 없음',
             regionMainIssue: regionalIssuesRes.rows[0]?.content || '아래 지도의 사안',
-            recommendedCategories: uniqueRecommendedCategories // 추출한 카테고리 목록 추가
+            recommendedCategories: uniqueRecommendedCategories
         };
 
-        // --- 6. 최종 응답 전송 ---
+        // --- 7. 최종 응답 전송 ---
         await client.query('COMMIT');
         res.status(200).json({
             success: true,
@@ -177,7 +206,8 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
                 allQuestions: allQuestions,
                 industryIssues: industryIssuesRes.rows,
                 regionalIssues: regionalIssuesRes.rows,
-                recommendedPrograms: recommendedPrograms,
+                priorityRecommendedPrograms: priorityProgramList, 
+                engineRecommendedPrograms: engineRecommendedPrograms,
                 industryAverageData: industryAverageData,
                 aiAnalysis: aiAnalysisData,
                 companySizeIssue: companySizeIssuesRes.rows[0] || null,

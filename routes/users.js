@@ -413,4 +413,55 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
     }
 });
 
+/**
+ * @api {put} /api/users/me/referral
+ * @description 추천 코드를 등록하거나 수정합니다.
+ */
+router.put('/me/referral', authMiddleware, async (req, res) => {
+    const { userId } = req.user;
+    const { referral_code } = req.body;
+
+    if (!referral_code) {
+        return res.status(400).json({ success: false, message: '추천 코드를 입력해주세요.' });
+    }
+
+    const client = await db.pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. 현재 사용자 정보 조회 (이미 코드가 있는지 확인)
+        const currentUserRes = await client.query('SELECT used_referral_code FROM users WHERE id = $1', [userId]);
+        if (currentUserRes.rows[0]?.used_referral_code) {
+            return res.status(400).json({ success: false, message: '추천 코드는 한 번만 등록할 수 있습니다.' });
+        }
+
+        // 2. 추천 코드 유효성 검증
+        const codeRes = await client.query(
+            'SELECT linked_admin_id FROM referral_codes WHERE code = $1 AND (expires_at IS NULL OR expires_at > NOW())',
+            [referral_code]
+        );
+
+        if (codeRes.rows.length === 0) {
+            return res.status(400).json({ success: false, message: '유효하지 않거나 만료된 추천 코드입니다.' });
+        }
+        const recommendingOrgId = codeRes.rows[0].linked_admin_id;
+
+        // 3. 사용자 정보에 추천 코드와 추천 단체 ID 업데이트
+        await client.query(
+            'UPDATE users SET used_referral_code = $1, recommending_organization_id = $2 WHERE id = $3',
+            [referral_code, recommendingOrgId, userId]
+        );
+
+        await client.query('COMMIT');
+        res.status(200).json({ success: true, message: '추천 코드가 성공적으로 등록되었습니다.' });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error("추천 코드 등록 에러:", error);
+        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+    } finally {
+        client.release();
+    }
+});
+
 module.exports = router;

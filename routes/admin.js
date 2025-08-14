@@ -749,12 +749,14 @@ router.post(
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin', 'content_manager']),
     upload.any(),
-    async (req, res) => {    
+    async (req, res) => {
         const client = await db.pool.connect();
         try {
             await client.query('BEGIN');
             const { content, ...otherBodyFields } = req.body;
-            const parsedContent = JSON.parse(content);            
+            const { userId } = req.user; // ★★★ 로그인된 사용자의 ID를 가져옵니다.
+
+            const parsedContent = JSON.parse(content);
             const finalContent = await Promise.all(parsedContent.map(async (section) => {
                 if (!section.images || section.images.length === 0) return section;
                 const updatedImages = await Promise.all(section.images.map(async (placeholder) => {
@@ -767,15 +769,17 @@ router.post(
                 return { ...section, images: updatedImages.filter(Boolean) };
             }));
             
+            // ★★★ INSERT 쿼리에 author_id 추가 ★★★
             const programQuery = `
                 INSERT INTO esg_programs (
                     title, program_code, esg_category, program_overview, content, 
                     economic_effects, related_links, risk_text, risk_description, 
                     opportunity_effects, service_regions, execution_type, status,
                     potential_e, potential_s, potential_g,
-                    existing_cost_details, service_costs
+                    existing_cost_details, service_costs,
+                    author_id 
                 ) 
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id;
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING id;
             `;
             const programValues = [
                 otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
@@ -784,7 +788,8 @@ router.post(
                 otherBodyFields.service_regions.split(','), otherBodyFields.execution_type, 'draft',
                 otherBodyFields.potential_e || 0, otherBodyFields.potential_s || 0, otherBodyFields.potential_g || 0,
                 otherBodyFields.existing_cost_details || null, 
-                otherBodyFields.service_costs || '[]'
+                otherBodyFields.service_costs || '[]',
+                userId // ★★★ author_id 값으로 userId 추가 ★★★
             ];
             
             const programResult = await client.query(programQuery, programValues);
@@ -867,14 +872,17 @@ router.put(
                 await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
             }
             
+            // ★★★ is_admin_recommended 필드 추가 ★★★
             const programQuery = `
                 UPDATE esg_programs SET 
                     title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, 
                     economic_effects = $6, related_links = $7, risk_text = $8, risk_description = $9, 
                     opportunity_effects = $10, service_regions = $11, execution_type = $12,
                     potential_e = $13, potential_s = $14, potential_g = $15, 
-                    existing_cost_details = $16, service_costs = $17, updated_at = NOW()
-                WHERE id = $18;
+                    existing_cost_details = $16, service_costs = $17, 
+                    is_admin_recommended = $18, -- 이 라인 추가
+                    updated_at = NOW()
+                WHERE id = $19;
             `;
             const programValues = [
                 otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
@@ -884,6 +892,7 @@ router.put(
                 otherBodyFields.potential_e || 0, otherBodyFields.potential_s || 0, otherBodyFields.potential_g || 0,
                 otherBodyFields.existing_cost_details || null, 
                 otherBodyFields.service_costs || '[]',
+                otherBodyFields.is_admin_recommended || false, // ★★★ 값 추가 (boolean)
                 id
             ];
             await client.query(programQuery, programValues);
@@ -3009,4 +3018,69 @@ router.put(
     }
 );
 
+/**
+ * @api {get} /api/admin/admins-list
+ * @description '추천 단체'로 선택할 수 있는 관리자 계정 목록을 조회합니다.
+ */
+router.get(
+    '/admins-list',
+    authMiddleware,
+    checkPermission(['super_admin', 'vice_super_admin']),
+    async (req, res) => {
+        try {
+            const query = "SELECT id, company_name FROM users WHERE role IN ('super_admin', 'vice_super_admin', 'content_manager', 'user_manager')";
+            const { rows } = await db.query(query);
+            res.status(200).json({ success: true, admins: rows });
+        } catch (error) {
+            res.status(500).json({ success: false, message: '서버 오류' });
+        }
+    }
+);
+
+/**
+ * @api {get} /api/admin/referral-codes
+ * @description 모든 추천 코드 목록을 조회합니다.
+ */
+router.get('/referral-codes', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+    try {
+        const query = `
+            SELECT rc.id, rc.code, rc.expires_at, u.company_name as organization_name
+            FROM referral_codes rc
+            LEFT JOIN users u ON rc.linked_admin_id = u.id
+            ORDER BY rc.created_at DESC
+        `;
+        const { rows } = await db.query(query);
+        res.status(200).json({ success: true, codes: rows });
+    } catch (error) { res.status(500).json({ success: false, message: '서버 오류' }); }
+});
+
+/**
+ * @api {post} /api/admin/referral-codes
+ * @description 새로운 추천 코드를 생성합니다.
+ */
+router.post('/referral-codes', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+    const { code, linked_admin_id, expires_at } = req.body;
+    try {
+        const query = 'INSERT INTO referral_codes (code, linked_admin_id, expires_at) VALUES ($1, $2, $3) RETURNING *';
+        await db.query(query, [code, linked_admin_id || null, expires_at || null]);
+        res.status(201).json({ success: true, message: '추천 코드가 생성되었습니다.' });
+    } catch (error) {
+        if (error.code === '23505') { // unique_violation
+            return res.status(409).json({ success: false, message: '이미 존재하는 추천 코드입니다.' });
+        }
+        res.status(500).json({ success: false, message: '서버 오류' });
+    }
+});
+
+/**
+ * @api {delete} /api/admin/referral-codes/:id
+ * @description 추천 코드를 삭제합니다.
+ */
+router.delete('/referral-codes/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+    const { id } = req.params;
+    try {
+        await db.query('DELETE FROM referral_codes WHERE id = $1', [id]);
+        res.status(200).json({ success: true, message: '추천 코드가 삭제되었습니다.' });
+    } catch (error) { res.status(500).json({ success: false, message: '서버 오류' }); }
+});
 module.exports = router;

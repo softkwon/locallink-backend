@@ -53,7 +53,7 @@ router.get('/count', authMiddleware, async (req, res) => {
 
 // POST /api/diagnoses - 새로운 진단 시작 및 Step 1 정보 저장
 router.post('/', authMiddleware, async (req, res) => {
-    const userId = req.user.userId;
+    const { userId } = req.user;
     const {
         companyName, representativeName, industryCodes, establishmentYear,
         employeeCount, productsServices, recentSales, recentOperatingProfit,
@@ -61,20 +61,38 @@ router.post('/', authMiddleware, async (req, res) => {
     } = req.body;
 
     try {
-        // ★★★ INSERT 쿼리에 diagnosis_type과 status 컬럼을 추가합니다. ★★★
+        // ★★★ 추천 코드 사용자 혜택 적용 로직 시작 ★★★
+        let isFree = false;
+        const userRes = await db.query('SELECT used_referral_code FROM users WHERE id = $1', [userId]);
+        const userReferralCode = userRes.rows[0]?.used_referral_code;
+
+        if (userReferralCode) {
+            const codeRes = await db.query(
+                'SELECT id FROM referral_codes WHERE code = $1 AND (expires_at IS NULL OR expires_at > NOW())',
+                [userReferralCode]
+            );
+            if (codeRes.rows.length > 0) {
+                // 유효한 추천 코드를 사용한 유저이므로 무료 혜택 적용
+                isFree = true;
+            }
+        }
+        // ★★★ 추천 코드 사용자 혜택 적용 로직 끝 ★★★
+
+        // INSERT 쿼리에 diagnosis_type, status, is_free 컬럼을 추가합니다.
         const query = `
             INSERT INTO diagnoses (
                 user_id, company_name, representative_name, industry_codes, establishment_year,
                 employee_count, products_services, recent_sales, recent_operating_profit,
                 export_percentage, is_listed, company_size, main_business_region,
-                diagnosis_type, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'simple', 'in_progress')
+                diagnosis_type, status, is_free
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'simple', 'in_progress', $14)
             RETURNING id;
         `;
         const values = [
             userId, companyName, representativeName, industryCodes, establishmentYear,
             employeeCount, productsServices, recentSales, recentOperatingProfit,
-            exportPercentage, isListed, companySize, mainBusinessRegion
+            exportPercentage, isListed, companySize, mainBusinessRegion,
+            isFree // is_free 값 추가
         ];
 
         const result = await db.query(query, values);
