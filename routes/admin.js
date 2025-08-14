@@ -123,6 +123,8 @@ router.get(
             const query = `
                 SELECT 
                     u.id, u.email, u.company_name, u.manager_name, u.manager_phone, u.role, u.created_at,
+                    u.used_referral_code,           -- 추천 코드
+                    recommender.company_name AS recommending_organization_name, -- 추천 단체명
                     EXISTS (SELECT 1 FROM diagnoses WHERE user_id = u.id AND status = 'completed') as has_completed_diagnosis,
                     (
                         SELECT status FROM user_applications ua
@@ -137,6 +139,7 @@ router.get(
                         LIMIT 1
                     ) as highest_application_status
                 FROM users u
+                LEFT JOIN users recommender ON u.recommending_organization_id = recommender.id -- 추천 단체 정보 JOIN
                 ORDER BY u.id DESC
             `;
             const { rows } = await db.query(query);
@@ -3018,17 +3021,13 @@ router.put(
     }
 );
 
-/**
- * @api {get} /api/admin/admins-list
- * @description '추천 단체'로 선택할 수 있는 관리자 계정 목록을 조회합니다.
- */
+
 router.get(
     '/admins-list',
     authMiddleware,
     checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         try {
-            // ★★★ role = 'content_manager' 조건으로 변경 ★★★
             const query = "SELECT id, company_name FROM users WHERE role = 'content_manager' ORDER BY company_name ASC";
             const { rows } = await db.query(query);
             res.status(200).json({ success: true, admins: rows });
@@ -3039,27 +3038,23 @@ router.get(
     }
 );
 
-/**
- * @api {get} /api/admin/referral-codes
- * @description 모든 추천 코드 목록을 조회합니다.
- */
 router.get('/referral-codes', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     try {
         const query = `
-            SELECT rc.id, rc.code, rc.expires_at, u.company_name as organization_name
+            SELECT rc.id, rc.code, rc.created_at, rc.expires_at, u.company_name as organization_name
             FROM referral_codes rc
             LEFT JOIN users u ON rc.linked_admin_id = u.id
             ORDER BY rc.created_at DESC
         `;
         const { rows } = await db.query(query);
         res.status(200).json({ success: true, codes: rows });
-    } catch (error) { res.status(500).json({ success: false, message: '서버 오류' }); }
+    } catch (error) { 
+        console.error("추천 코드 목록 조회 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류' }); 
+    }
 });
 
-/**
- * @api {post} /api/admin/referral-codes
- * @description 새로운 추천 코드를 생성합니다.
- */
+
 router.post('/referral-codes', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { code, linked_admin_id, expires_at } = req.body;
     try {
@@ -3074,10 +3069,7 @@ router.post('/referral-codes', authMiddleware, checkPermission(['super_admin', '
     }
 });
 
-/**
- * @api {delete} /api/admin/referral-codes/:id
- * @description 추천 코드를 삭제합니다.
- */
+
 router.delete('/referral-codes/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { id } = req.params;
     try {
