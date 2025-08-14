@@ -3028,10 +3028,12 @@ router.get(
     checkPermission(['super_admin', 'vice_super_admin']),
     async (req, res) => {
         try {
-            const query = "SELECT id, company_name FROM users WHERE role IN ('super_admin', 'vice_super_admin', 'content_manager', 'user_manager')";
+            // ★★★ role = 'content_manager' 조건으로 변경 ★★★
+            const query = "SELECT id, company_name FROM users WHERE role = 'content_manager' ORDER BY company_name ASC";
             const { rows } = await db.query(query);
             res.status(200).json({ success: true, admins: rows });
         } catch (error) {
+            console.error("콘텐츠 매니저 목록 조회 에러:", error);
             res.status(500).json({ success: false, message: '서버 오류' });
         }
     }
