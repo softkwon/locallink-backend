@@ -385,27 +385,44 @@ router.delete('/:id', authMiddleware, async (req, res) => {
 
 router.get('/check-eligibility', authMiddleware, async (req, res) => {
     const { userId, role } = req.user;
+    console.log(`[Check Eligibility] User ID: ${userId}, Role: ${role}`); // 디버깅용 로그
+
     try {
         // 1. 관리자 역할은 항상 진단 가능
         const adminRoles = ['super_admin', 'vice_super_admin', 'content_manager', 'user_manager'];
         if (adminRoles.includes(role)) {
+            console.log(`[Check Eligibility] Admin user. Access granted.`);
             return res.status(200).json({ success: true, eligible: true });
         }
 
-        // 2. 일반 사용자의 경우, users 테이블과 referral_codes 테이블을 JOIN하여 한 번에 유효성 검사
-        const query = `
-            SELECT 1
-            FROM users u
-            JOIN referral_codes rc ON u.used_referral_code = rc.code
-            WHERE u.id = $1 AND (rc.expires_at IS NULL OR rc.expires_at > NOW())
-        `;
-        const result = await db.query(query, [userId]);
+        // 2. 일반 사용자의 경우, 먼저 사용자가 등록한 코드를 가져옵니다.
+        const userRes = await db.query('SELECT used_referral_code FROM users WHERE id = $1', [userId]);
+        
+        if (userRes.rows.length === 0) {
+            return res.status(404).json({ success: false, message: '사용자 정보를 찾을 수 없습니다.' });
+        }
 
-        // 3. 조회 결과가 있으면(1줄 이상) 자격이 있는 것임
-        if (result.rows.length > 0) {
+        const userReferralCode = userRes.rows[0].used_referral_code;
+
+        // 3. 사용자에게 등록된 추천 코드가 없으면 자격 없음(false)을 반환합니다.
+        if (!userReferralCode) {
+            console.log(`[Check Eligibility] User has no referral code. Access denied.`);
+            return res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 없습니다.' });
+        }
+
+        // 4. 등록된 코드가 유효한지 referral_codes 테이블에서 확인합니다.
+        const codeRes = await db.query(
+            'SELECT id FROM referral_codes WHERE code = $1 AND (expires_at IS NULL OR expires_at > NOW())',
+            [userReferralCode]
+        );
+
+        // 5. 유효한 코드가 있으면 자격 있음(true), 없으면 자격 없음(false)을 반환합니다.
+        if (codeRes.rows.length > 0) {
+            console.log(`[Check Eligibility] User has a valid code. Access granted.`);
             res.status(200).json({ success: true, eligible: true });
         } else {
-            res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 유효하지 않거나 없습니다.' });
+            console.log(`[Check Eligibility] User's code is invalid or expired. Access denied.`);
+            res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 유효하지 않습니다.' });
         }
 
     } catch (error) {
