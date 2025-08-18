@@ -1,11 +1,52 @@
-// routes/diagnoses.js (SQL 구문 오류 수정된 최종본)
 const express = require('express');
 const db = require('../db');
 const authMiddleware = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-// GET /api/diagnoses/my-history - 나의 모든 진단 이력 조회
+router.get('/check-eligibility', authMiddleware, async (req, res) => {
+    const { userId, role } = req.user;
+    console.log(`[Check Eligibility] User ID: ${userId}, Role: ${role}`); // 디버깅용 로그
+
+    try {
+        const adminRoles = ['super_admin', 'vice_super_admin', 'content_manager', 'user_manager'];
+        if (adminRoles.includes(role)) {
+            console.log(`[Check Eligibility] Admin user. Access granted.`);
+            return res.status(200).json({ success: true, eligible: true });
+        }
+
+        const userRes = await db.query('SELECT used_referral_code FROM users WHERE id = $1', [userId]);
+        
+        if (userRes.rows.length === 0) {
+            return res.status(404).json({ success: false, message: '사용자 정보를 찾을 수 없습니다.' });
+        }
+
+        const userReferralCode = userRes.rows[0].used_referral_code;
+
+        if (!userReferralCode) {
+            console.log(`[Check Eligibility] User has no referral code. Access denied.`);
+            return res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 없습니다.' });
+        }
+
+        const codeRes = await db.query(
+            'SELECT id FROM referral_codes WHERE code = $1 AND (expires_at IS NULL OR expires_at > NOW())',
+            [userReferralCode]
+        );
+
+        if (codeRes.rows.length > 0) {
+            console.log(`[Check Eligibility] User has a valid code. Access granted.`);
+            res.status(200).json({ success: true, eligible: true });
+        } else {
+            console.log(`[Check Eligibility] User's code is invalid or expired. Access denied.`);
+            res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 유효하지 않습니다.' });
+        }
+
+    } catch (error) {
+        console.error('진단 자격 확인 에러:', error);
+        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+    }
+});
+
 router.get('/my-history', authMiddleware, async (req, res) => {
     try {
         const userId = req.user.userId;
@@ -20,13 +61,11 @@ router.get('/my-history', authMiddleware, async (req, res) => {
     }
 });
 
-//--- ▼▼▼ 진단 횟수 확인 API 추가 ▼▼▼ ---
 router.get('/count', authMiddleware, async (req, res) => {
     try {
         const userId = req.user.userId;
-        const userRole = req.user.role; // authMiddleware를 통해 전달된 역할 정보
+        const userRole = req.user.role; 
 
-        // 역할별 횟수 제한 정의
         const limits = {
             user: 1,
             content_manager: 5,
@@ -34,14 +73,11 @@ router.get('/count', authMiddleware, async (req, res) => {
             super_admin: 10
         };
 
-        // 사용자의 역할에 맞는 최대 횟수를 가져옵니다. (해당 역할이 없으면 기본 1회)
         const maxAttempts = limits[userRole] || 1;
 
-        // 현재까지의 진단 횟수를 DB에서 가져옵니다.
         const { rows } = await db.query('SELECT COUNT(id) as count FROM diagnoses WHERE user_id = $1', [userId]);
         const currentCount = parseInt(rows[0].count);
 
-        // 현재 횟수와 최대 횟수를 함께 응답으로 보내줍니다.
         res.status(200).json({ success: true, count: currentCount, limit: maxAttempts });
 
     } catch (error) {
@@ -51,7 +87,6 @@ router.get('/count', authMiddleware, async (req, res) => {
 });
 
 
-// POST /api/diagnoses - 새로운 진단 시작 및 Step 1 정보 저장
 router.post('/', authMiddleware, async (req, res) => {
     const { userId } = req.user;
     const {
@@ -61,7 +96,6 @@ router.post('/', authMiddleware, async (req, res) => {
     } = req.body;
 
     try {
-        // ★★★ 추천 코드 사용자 혜택 적용 로직 시작 ★★★
         let isFree = false;
         const userRes = await db.query('SELECT used_referral_code FROM users WHERE id = $1', [userId]);
         const userReferralCode = userRes.rows[0]?.used_referral_code;
@@ -72,13 +106,10 @@ router.post('/', authMiddleware, async (req, res) => {
                 [userReferralCode]
             );
             if (codeRes.rows.length > 0) {
-                // 유효한 추천 코드를 사용한 유저이므로 무료 혜택 적용
                 isFree = true;
             }
         }
-        // ★★★ 추천 코드 사용자 혜택 적용 로직 끝 ★★★
 
-        // INSERT 쿼리에 diagnosis_type, status, is_free 컬럼을 추가합니다.
         const query = `
             INSERT INTO diagnoses (
                 user_id, company_name, representative_name, industry_codes, establishment_year,
@@ -107,7 +138,6 @@ router.post('/', authMiddleware, async (req, res) => {
     }
 });
 
-// PUT /api/diagnoses/:id - 특정 진단(Step 1)의 정보 수정하기
 router.put('/:id', authMiddleware, async (req, res) => {
     const { id: diagnosisId } = req.params;
     const userId = req.user.userId;
@@ -146,7 +176,6 @@ router.put('/:id', authMiddleware, async (req, res) => {
     }
 });
 
-// GET /api/diagnoses/:id - 특정 진단의 상세 정보 가져오기
 router.get('/:id', authMiddleware, async (req, res) => {
     const { id: diagnosisId } = req.params;
     const userId = req.user.userId;
@@ -166,7 +195,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
 });
 
 
-// POST /api/diagnoses/:id/answers - 설문 답변 저장 및 채점 (최종 수정본)
 router.post('/:id/answers', authMiddleware, async (req, res) => {
     const { id: diagnosisId } = req.params;
     const { userId } = req.user;
@@ -192,7 +220,6 @@ router.post('/:id/answers', authMiddleware, async (req, res) => {
         
         const answerInsertPromises = [];
         
-        // --- ▼▼▼ 기존 채점 로직 (유지) ▼▼▼ ---
         for (const questionCode in answers) {
             if (answers[questionCode]) {
                 const userAnswer = answers[questionCode];
@@ -233,9 +260,7 @@ router.post('/:id/answers', authMiddleware, async (req, res) => {
             }
         }
         await Promise.all(answerInsertPromises);
-        // --- ▲▲▲ 기존 채점 로직 끝 ▲▲▲ ---
         
-        // --- ▼▼▼ 점수 집계 및 저장 로직 (신규 추가) ▼▼▼ ---
         const questionsMap = new Map(allQuestions.map(q => [q.question_code, q.esg_category]));
         const answersRes = await client.query('SELECT question_code, score FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosisId]);
 
@@ -292,13 +317,11 @@ router.post('/:id/answers', authMiddleware, async (req, res) => {
 });
 
 
-// GET /api/diagnoses/:id/results - 특정 진단에 대한 종합 결과 데이터 가져오기
 router.get('/:id/results', authMiddleware, async (req, res) => {
     const { id } = req.params; // URL에서 진단 ID를 가져옵니다.
     const userId = req.user.userId; // 로그인된 사용자 ID를 가져옵니다.
 
     try {
-    // 1. 필요한 모든 데이터를 동시에 가져옵니다.
     const diagnosisPromise = db.query(`SELECT d.*, u.company_name FROM diagnoses d JOIN users u ON d.user_id = u.id WHERE d.id = $1 AND d.user_id = $2;`, [id, userId]);
     const answersPromise = db.query(`
         SELECT da.question_code, da.answer_value, da.score, sq.question_text, sq.options, sq.criteria_text, sq.esg_category, sq.display_order
@@ -326,16 +349,12 @@ router.get('/:id/results', authMiddleware, async (req, res) => {
     const scoringRules = rulesRes.rows;
     const allQuestions = questionsRes.rows; // ★★★ 가져온 질문 목록
 
-    // 2. 업종 평균 데이터 가져오기
     const primaryIndustryCode = diagnosisData.industry_codes ? diagnosisData.industry_codes[0] : null;
     let industryAverages = null;
     if (primaryIndustryCode) {
         const avgRes = await db.query('SELECT * FROM industry_averages WHERE industry_code = $1', [primaryIndustryCode]);
         if (avgRes.rows.length > 0) industryAverages = avgRes.rows[0];
     }
-    
-
-    // 3. 모든 정보를 종합하여 최종 결과 데이터 구성
     res.status(200).json({ 
         success: true, 
         results: {
@@ -353,7 +372,6 @@ router.get('/:id/results', authMiddleware, async (req, res) => {
 });
 
 
-// --- 특정 진단 삭제 API ---
 router.delete('/:id', authMiddleware, async (req, res) => {
     const { id: diagnosisId } = req.params;
     const userId = req.user.userId;
@@ -361,13 +379,10 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     try {
         await client.query('BEGIN');
         
-        // 연결된 답변들을 먼저 삭제합니다.
         await client.query('DELETE FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosisId]);
         
-        // 그 다음 진단 자체를 삭제합니다. (본인만 삭제 가능하도록 user_id 확인)
         const { rowCount } = await client.query('DELETE FROM diagnoses WHERE id = $1 AND user_id = $2', [diagnosisId, userId]);
         
-        // ★★★ throw new Error 대신 404 응답을 보냅니다. ★★★
         if (rowCount === 0) {
             return res.status(404).json({ success: false, message: '삭제할 진단이 없거나 권한이 없습니다.' });
         }
@@ -383,52 +398,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     }
 });
 
-router.get('/check-eligibility', authMiddleware, async (req, res) => {
-    const { userId, role } = req.user;
-    console.log(`[Check Eligibility] User ID: ${userId}, Role: ${role}`); // 디버깅용 로그
 
-    try {
-        // 1. 관리자 역할은 항상 진단 가능
-        const adminRoles = ['super_admin', 'vice_super_admin', 'content_manager', 'user_manager'];
-        if (adminRoles.includes(role)) {
-            console.log(`[Check Eligibility] Admin user. Access granted.`);
-            return res.status(200).json({ success: true, eligible: true });
-        }
-
-        // 2. 일반 사용자의 경우, 먼저 사용자가 등록한 코드를 가져옵니다.
-        const userRes = await db.query('SELECT used_referral_code FROM users WHERE id = $1', [userId]);
-        
-        if (userRes.rows.length === 0) {
-            return res.status(404).json({ success: false, message: '사용자 정보를 찾을 수 없습니다.' });
-        }
-
-        const userReferralCode = userRes.rows[0].used_referral_code;
-
-        // 3. 사용자에게 등록된 추천 코드가 없으면 자격 없음(false)을 반환합니다.
-        if (!userReferralCode) {
-            console.log(`[Check Eligibility] User has no referral code. Access denied.`);
-            return res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 없습니다.' });
-        }
-
-        // 4. 등록된 코드가 유효한지 referral_codes 테이블에서 확인합니다.
-        const codeRes = await db.query(
-            'SELECT id FROM referral_codes WHERE code = $1 AND (expires_at IS NULL OR expires_at > NOW())',
-            [userReferralCode]
-        );
-
-        // 5. 유효한 코드가 있으면 자격 있음(true), 없으면 자격 없음(false)을 반환합니다.
-        if (codeRes.rows.length > 0) {
-            console.log(`[Check Eligibility] User has a valid code. Access granted.`);
-            res.status(200).json({ success: true, eligible: true });
-        } else {
-            console.log(`[Check Eligibility] User's code is invalid or expired. Access denied.`);
-            res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 유효하지 않습니다.' });
-        }
-
-    } catch (error) {
-        console.error('진단 자격 확인 에러:', error);
-        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
-    }
-});
 
 module.exports = router;
