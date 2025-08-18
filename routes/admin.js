@@ -3104,4 +3104,15 @@ router.delete('/referral-codes/:id', authMiddleware, checkPermission(['super_adm
         res.status(200).json({ success: true, message: '추천 코드가 삭제되었습니다.' });
     } catch (error) { res.status(500).json({ success: false, message: '서버 오류' }); }
 });
+
+router.get('/solution-categories-public', async (req, res) => {
+    try {
+        const { rows } = await db.query('SELECT * FROM solution_categories ORDER BY parent_category, id');
+        res.status(200).json({ success: true, categories: rows });
+    } catch (error) {
+        console.error("Public 솔루션 카테고리 조회 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
+
 module.exports = router;
