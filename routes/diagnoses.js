@@ -384,25 +384,25 @@ router.delete('/:id', authMiddleware, async (req, res) => {
 });
 
 router.get('/check-eligibility', authMiddleware, async (req, res) => {
-    const { userId } = req.user;
+    const { userId, role } = req.user; 
     try {
-        // users 테이블에서 사용자가 등록한 추천 코드를 조회합니다.
+        const adminRoles = ['super_admin', 'vice_super_admin', 'content_manager', 'user_manager'];
+        if (adminRoles.includes(role)) {
+            return res.status(200).json({ success: true, eligible: true });
+        }
+
         const userRes = await db.query('SELECT used_referral_code FROM users WHERE id = $1', [userId]);
-        
         const userReferralCode = userRes.rows[0]?.used_referral_code;
 
-        // 1. 사용자에게 등록된 추천 코드가 없는 경우
         if (!userReferralCode) {
             return res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 없습니다.' });
         }
 
-        // 2. 등록된 추천 코드가 유효한지 referral_codes 테이블에서 확인합니다.
         const codeRes = await db.query(
             'SELECT id FROM referral_codes WHERE code = $1 AND (expires_at IS NULL OR expires_at > NOW())',
             [userReferralCode]
         );
 
-        // 3. 유효한 코드가 있으면 자격이 있고(true), 없으면 자격이 없습니다(false).
         if (codeRes.rows.length > 0) {
             res.status(200).json({ success: true, eligible: true });
         } else {
