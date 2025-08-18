@@ -22,7 +22,7 @@ router.get('/me', authMiddleware, async (req, res) => {
                 u.id, u.email, u.company_name, u.representative, u.role, u.profile_image_url,
                 u.address, u.business_location, u.manager_name, u.manager_phone, u.industry_codes, u.interests, u.agreed_to_marketing,
                 u.used_referral_code,
-                recommender.company_name AS recommending_organization_name, -- 추천 단체명 추가
+                recommender.company_name AS recommending_organization_name,
                 EXISTS (SELECT 1 FROM diagnoses WHERE user_id = u.id AND status = 'completed') as has_completed_diagnosis,
                 (
                     SELECT status FROM user_applications 
@@ -32,7 +32,7 @@ router.get('/me', authMiddleware, async (req, res) => {
                     LIMIT 1
                 ) as highest_application_status
             FROM users u
-            LEFT JOIN users recommender ON u.recommending_organization_id = recommender.id -- JOIN 추가
+            LEFT JOIN users recommender ON u.recommending_organization_id = recommender.id
             WHERE u.id = $1
         `;
         const { rows } = await db.query(query, [userId]);
@@ -57,6 +57,7 @@ router.get('/me', authMiddleware, async (req, res) => {
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
 });
+
 
 router.post('/me/profile-image', authMiddleware, upload.single('profileImage'), async (req, res) => {
     const { userId } = req.user;
