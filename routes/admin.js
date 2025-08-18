@@ -2148,6 +2148,7 @@ router.get('/applications', authMiddleware, checkPermission(['super_admin', 'vic
         const query = `
             SELECT 
                 ua.id,
+                ua.status, 
                 ua.created_at,
                 u.company_name,
                 u.manager_name,
