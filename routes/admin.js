@@ -735,9 +735,21 @@ router.put(
 
 router.get('/programs', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
     try {
-        const { rows } = await db.query('SELECT * FROM esg_programs ORDER BY id ASC');
+        const { userId, role } = req.user; 
+
+        let query = 'SELECT * FROM esg_programs';
+        const values = [];
+
+        if (role === 'content_manager') {
+            query += ' WHERE author_id = $1';
+            values.push(userId);
+        }
+
+        query += ' ORDER BY id ASC';
         
-        const processedPrograms = rows.map(processProgramData);
+        const { rows } = await db.query(query, values);
+        
+        const processedPrograms = rows.map(processProgramData); 
         
         res.status(200).json({ success: true, programs: processedPrograms });
     } catch (error) {
@@ -842,6 +854,16 @@ router.put(
         try {
             await client.query('BEGIN');
 
+            const programRes = await client.query('SELECT author_id FROM esg_programs WHERE id = $1', [id]);
+            if (programRes.rows.length === 0) {
+                return res.status(404).json({ success: false, message: '프로그램을 찾을 수 없습니다.' });
+            }
+            const programAuthorId = programRes.rows[0].author_id;
+
+            if (role === 'content_manager' && programAuthorId !== userId) {
+                return res.status(403).json({ success: false, message: '이 프로그램을 수정할 권한이 없습니다.' });
+            }        
+
             const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
             const oldImageUrls = new Set();
             if (oldProgramRes.rows[0]?.content) {
@@ -898,6 +920,14 @@ router.put(
                 otherBodyFields.is_admin_recommended || false, // ★★★ 값 추가 (boolean)
                 id
             ];
+
+            if ((role === 'super_admin' || role === 'vice_super_admin') && otherBodyFields.author_id) {
+                programQuery += `, author_id = $${programValues.length + 1}`;
+                programValues.push(otherBodyFields.author_id);
+            }            
+            programQuery += ` WHERE id = $${programValues.length + 1};`;
+            programValues.push(id);
+
             await client.query(programQuery, programValues);
 
             const solutionCategories = otherBodyFields.solution_categories ? otherBodyFields.solution_categories.split(',') : [];
