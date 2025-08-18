@@ -850,20 +850,26 @@ router.put(
     upload.any(),
     async (req, res) => {
         const { id } = req.params;
+        // ★★★ [수정] userId와 role을 req.user에서 가장 먼저 가져옵니다. ★★★
+        const { userId, role } = req.user; 
         const client = await db.pool.connect();
+
         try {
             await client.query('BEGIN');
 
+            // 1. 권한 확인: 이 프로그램을 수정할 수 있는 사용자인지 확인합니다.
             const programRes = await client.query('SELECT author_id FROM esg_programs WHERE id = $1', [id]);
             if (programRes.rows.length === 0) {
                 return res.status(404).json({ success: false, message: '프로그램을 찾을 수 없습니다.' });
             }
             const programAuthorId = programRes.rows[0].author_id;
 
-            if (role === 'content_manager' && programAuthorId !== userId) {
+            // 관리자 그룹이 아니고, 프로그램 소유자도 아니라면 수정을 막습니다.
+            if (!['super_admin', 'vice_super_admin'].includes(role) && programAuthorId !== userId) {
                 return res.status(403).json({ success: false, message: '이 프로그램을 수정할 권한이 없습니다.' });
-            }        
+            }
 
+            // 2. 기존 이미지 정보 처리 (기존 코드와 동일)
             const oldProgramRes = await client.query('SELECT content FROM esg_programs WHERE id = $1', [id]);
             const oldImageUrls = new Set();
             if (oldProgramRes.rows[0]?.content) {
@@ -872,6 +878,8 @@ router.put(
                     if (section.images) section.images.forEach(imgUrl => oldImageUrls.add(imgUrl));
                 });
             }
+
+            // 3. 요청 데이터 및 신규 이미지 처리 (기존 코드와 동일)
             const { content, ...otherBodyFields } = req.body;
             const parsedContent = JSON.parse(content);
             const finalContent = await Promise.all(parsedContent.map(async (section) => {
@@ -882,12 +890,14 @@ router.put(
                     }
                     const file = req.files.find(f => f.fieldname === imageOrPlaceholder);
                     if (file) {
-                        return await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
+                        // req.user.userId 대신, 위에서 선언한 userId 변수를 사용합니다.
+                        return await uploadImageToS3(file.buffer, file.originalname, 'programs', userId);
                     }
                     return imageOrPlaceholder;
                 }));
                 return { ...section, images: updatedImages.filter(Boolean) };
             }));
+
             const finalImageUrls = new Set();
             finalContent.forEach(section => {
                 if (section.images) section.images.forEach(imgUrl => finalImageUrls.add(imgUrl));
@@ -897,18 +907,7 @@ router.put(
                 await Promise.all(imagesToDelete.map(url => deleteImageFromS3(url)));
             }
             
-            // ★★★ is_admin_recommended 필드 추가 ★★★
-            const programQuery = `
-                UPDATE esg_programs SET 
-                    title = $1, program_code = $2, esg_category = $3, program_overview = $4, content = $5, 
-                    economic_effects = $6, related_links = $7, risk_text = $8, risk_description = $9, 
-                    opportunity_effects = $10, service_regions = $11, execution_type = $12,
-                    potential_e = $13, potential_s = $14, potential_g = $15, 
-                    existing_cost_details = $16, service_costs = $17, 
-                    is_admin_recommended = $18, -- 이 라인 추가
-                    updated_at = NOW()
-                WHERE id = $19;
-            `;
+            // 4. 데이터베이스 업데이트 쿼리 생성
             const programValues = [
                 otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
                 JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
@@ -917,19 +916,29 @@ router.put(
                 otherBodyFields.potential_e || 0, otherBodyFields.potential_s || 0, otherBodyFields.potential_g || 0,
                 otherBodyFields.existing_cost_details || null, 
                 otherBodyFields.service_costs || '[]',
-                otherBodyFields.is_admin_recommended || false, // ★★★ 값 추가 (boolean)
-                id
+                otherBodyFields.is_admin_recommended || false
             ];
 
-            if ((role === 'super_admin' || role === 'vice_super_admin') && otherBodyFields.author_id) {
-                programQuery += `, author_id = $${programValues.length + 1}`;
+            let querySetParts = [
+                'title = $1', 'program_code = $2', 'esg_category = $3', 'program_overview = $4', 'content = $5',
+                'economic_effects = $6', 'related_links = $7', 'risk_text = $8', 'risk_description = $9',
+                'opportunity_effects = $10', 'service_regions = $11', 'execution_type = $12',
+                'potential_e = $13', 'potential_s = $14', 'potential_g = $15',
+                'existing_cost_details = $16', 'service_costs = $17', 'is_admin_recommended = $18', 'updated_at = NOW()'
+            ];
+
+            // Super Admin 또는 Vice Super Admin이 author_id를 지정한 경우, 쿼리에 추가
+            if (['super_admin', 'vice_super_admin'].includes(role) && otherBodyFields.author_id) {
                 programValues.push(otherBodyFields.author_id);
-            }            
-            programQuery += ` WHERE id = $${programValues.length + 1};`;
+                querySetParts.push(`author_id = $${programValues.length}`);
+            }
+
             programValues.push(id);
+            const finalQuery = `UPDATE esg_programs SET ${querySetParts.join(', ')} WHERE id = $${programValues.length}`;
+            
+            await client.query(finalQuery, programValues);
 
-            await client.query(programQuery, programValues);
-
+            // 5. 솔루션 카테고리 업데이트 (기존 코드와 동일)
             const solutionCategories = otherBodyFields.solution_categories ? otherBodyFields.solution_categories.split(',') : [];
             await client.query('DELETE FROM program_solution_categories WHERE program_id = $1', [id]);
             if (solutionCategories.length > 0) {
