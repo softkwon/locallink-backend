@@ -769,7 +769,10 @@ router.post(
         try {
             await client.query('BEGIN');
             const { content, ...otherBodyFields } = req.body;
-            const { userId } = req.user; // ★★★ 로그인된 사용자의 ID를 가져옵니다.
+            const { userId, role } = req.user;
+
+            const authorId = (['super_admin', 'vice_super_admin'].includes(role) && otherBodyFields.author_id) ? otherBodyFields.author_id : userId;
+            const isAdminRecommended = otherBodyFields.is_admin_recommended === 'true' || otherBodyFields.is_admin_recommended === true;
 
             const parsedContent = JSON.parse(content);
             const finalContent = await Promise.all(parsedContent.map(async (section) => {
@@ -777,14 +780,13 @@ router.post(
                 const updatedImages = await Promise.all(section.images.map(async (placeholder) => {
                     const file = req.files.find(f => f.fieldname === placeholder);
                     if (file) {
-                        return await uploadImageToS3(file.buffer, file.originalname, 'programs', req.user.userId);
+                        return await uploadImageToS3(file.buffer, file.originalname, 'programs', userId);
                     }
                     return null;
                 }));
                 return { ...section, images: updatedImages.filter(Boolean) };
             }));
             
-            // ★★★ INSERT 쿼리에 author_id 추가 ★★★
             const programQuery = `
                 INSERT INTO esg_programs (
                     title, program_code, esg_category, program_overview, content, 
@@ -792,40 +794,33 @@ router.post(
                     opportunity_effects, service_regions, execution_type, status,
                     potential_e, potential_s, potential_g,
                     existing_cost_details, service_costs,
-                    author_id 
+                    is_admin_recommended, author_id 
                 ) 
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING id;
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft', $13, $14, $15, $16, $17, $18, $19) RETURNING id;
             `;
             const programValues = [
                 otherBodyFields.title, otherBodyFields.program_code, otherBodyFields.esg_category, otherBodyFields.program_overview,
                 JSON.stringify(finalContent), otherBodyFields.economic_effects, otherBodyFields.related_links,
                 otherBodyFields.risk_text, otherBodyFields.risk_description, otherBodyFields.opportunity_effects,
-                otherBodyFields.service_regions.split(','), otherBodyFields.execution_type, 'draft',
+                otherBodyFields.service_regions.split(','), otherBodyFields.execution_type,
                 otherBodyFields.potential_e || 0, otherBodyFields.potential_s || 0, otherBodyFields.potential_g || 0,
                 otherBodyFields.existing_cost_details || null, 
                 otherBodyFields.service_costs || '[]',
-                userId // ★★★ author_id 값으로 userId 추가 ★★★
+                isAdminRecommended,
+                authorId
             ];
             
             const programResult = await client.query(programQuery, programValues);
             const newProgramId = programResult.rows[0].id;
 
             const solutionCategories = otherBodyFields.solution_categories ? otherBodyFields.solution_categories.split(',') : [];
-            
             if (solutionCategories.length > 0) {
-                const categoryRes = await client.query(
-                    'SELECT id, category_name FROM solution_categories WHERE category_name = ANY($1::text[])',
-                    [solutionCategories]
-                );
+                const categoryRes = await client.query('SELECT id, category_name FROM solution_categories WHERE category_name = ANY($1::text[])', [solutionCategories]);
                 const categoryMap = new Map(categoryRes.rows.map(row => [row.category_name, row.id]));
-
                 for (const categoryName of solutionCategories) {
                     const categoryId = categoryMap.get(categoryName);
                     if (categoryId) {
-                        await client.query(
-                            'INSERT INTO program_solution_categories (program_id, category_id) VALUES ($1, $2)',
-                            [newProgramId, categoryId]
-                        );
+                        await client.query('INSERT INTO program_solution_categories (program_id, category_id) VALUES ($1, $2)', [newProgramId, categoryId]);
                     }
                 }
             }
