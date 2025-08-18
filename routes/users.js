@@ -1,7 +1,6 @@
-// routes/users.js (최종본)
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');    // 토큰 해석을 위해 추가   
+const jwt = require('jsonwebtoken');     
 const db = require('../db');
 const authMiddleware = require('../middleware/authMiddleware');
 const multer = require('multer');
@@ -10,60 +9,55 @@ const path = require('path');
 const fs = require('fs');
 const s3 = require('../config/s3-client');
 
-// multer 인스턴스 생성 (메모리 저장 방식 사용)
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage, limits: { fileSize: 5 * 1024 * 1024 } });
 const router = express.Router();
 
-// GET /api/users/me - 로그인된 내 정보 가져오기 (레벨 계산 포함)
 router.get('/me', authMiddleware, async (req, res) => {
-  try {
-    const { userId } = req.user;
-    
-    const query = `
-        SELECT 
-            u.id, u.email, u.company_name, u.representative, u.role, u.profile_image_url,
-            u.address, u.business_location, u.manager_name, u.manager_phone, u.industry_codes, u.interests, u.agreed_to_marketing,
-            EXISTS (SELECT 1 FROM diagnoses WHERE user_id = u.id AND status = 'completed') as has_completed_diagnosis,
-            (
-                SELECT status FROM user_applications 
-                WHERE user_id = u.id 
-                ORDER BY 
-                    CASE status
-                        WHEN '완료' THEN 1 
-                        WHEN '진행' THEN 2 
-                        WHEN '접수' THEN 3
-                        ELSE 4
-                    END
-                LIMIT 1
-            ) as highest_application_status
-        FROM users u
-        WHERE u.id = $1
-    `;
-    const { rows } = await db.query(query, [userId]);
+    try {
+        const { userId } = req.user;
+        
+        const query = `
+            SELECT 
+                u.id, u.email, u.company_name, u.representative, u.role, u.profile_image_url,
+                u.address, u.business_location, u.manager_name, u.manager_phone, u.industry_codes, u.interests, u.agreed_to_marketing,
+                u.used_referral_code,
+                recommender.company_name AS recommending_organization_name, -- 추천 단체명 추가
+                EXISTS (SELECT 1 FROM diagnoses WHERE user_id = u.id AND status = 'completed') as has_completed_diagnosis,
+                (
+                    SELECT status FROM user_applications 
+                    WHERE user_id = u.id 
+                    ORDER BY 
+                        CASE status WHEN '완료' THEN 1 WHEN '진행' THEN 2 WHEN '접수' THEN 3 ELSE 4 END
+                    LIMIT 1
+                ) as highest_application_status
+            FROM users u
+            LEFT JOIN users recommender ON u.recommending_organization_id = recommender.id -- JOIN 추가
+            WHERE u.id = $1
+        `;
+        const { rows } = await db.query(query, [userId]);
 
-    if (rows.length === 0) {
-      return res.status(404).json({ success: false, message: '사용자를 찾을 수 없습니다.' });
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: '사용자를 찾을 수 없습니다.' });
+        }
+
+        const user = rows[0];
+        let userLevel = 1;
+        if (user.has_completed_diagnosis) userLevel = 2;
+        if (user.highest_application_status) {
+            userLevel = 3;
+            if (user.highest_application_status === '진행') userLevel = 4;
+            if (user.highest_application_status === '완료') userLevel = 5;
+        }
+        user.level = userLevel;
+
+        res.status(200).json({ success: true, user: user });
+    } catch (error) {
+        console.error('내 정보 조회 에러:', error);
+        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
-
-    const user = rows[0];
-    let userLevel = 1;
-    if (user.has_completed_diagnosis) userLevel = 2;
-    if (user.highest_application_status) {
-        userLevel = 3; // 신청/접수
-        if (user.highest_application_status === '진행') userLevel = 4;
-        if (user.highest_application_status === '완료') userLevel = 5;
-    }
-    user.level = userLevel;
-
-    res.status(200).json({ success: true, user: user });
-  } catch (error) {
-    console.error('내 정보 조회 에러:', error);
-    res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
-  }
 });
 
-// ★★★ 2. 프로필 이미지를 업로드하고 DB에 저장하는 새로운 API를 추가합니다. ★★★
 router.post('/me/profile-image', authMiddleware, upload.single('profileImage'), async (req, res) => {
     const { userId } = req.user;
     if (!req.file) {
@@ -71,13 +65,11 @@ router.post('/me/profile-image', authMiddleware, upload.single('profileImage'), 
     }
 
     try {
-        // 1. Sharp를 이용해 이미지를 리사이징하고 jpeg로 변환합니다.
         const processedImageBuffer = await sharp(req.file.buffer)
             .resize(100, 100, { fit: 'cover' })
             .toFormat('jpeg', { quality: 90 })
             .toBuffer();
 
-        // 2. S3에 업로드하기 위한 파라미터를 설정합니다.
         const uploadParams = {
             Bucket: process.env.AWS_S3_BUCKET_NAME,
             Key: `profiles/profile-${userId}-${Date.now()}.jpeg`, // S3에 저장될 파일 경로 및 이름
@@ -86,13 +78,10 @@ router.post('/me/profile-image', authMiddleware, upload.single('profileImage'), 
             ACL: 'public-read'                                  // 공개 읽기 권한
         };
 
-        // 3. S3에 이미지를 업로드합니다.
         const s3UploadResult = await s3.upload(uploadParams).promise();
 
-        // 4. 업로드된 이미지의 최종 URL을 가져옵니다.
         const fileUrl = s3UploadResult.Location;
 
-        // 5. DB에 최종 S3 URL을 업데이트합니다.
         await db.query('UPDATE users SET profile_image_url = $1 WHERE id = $2', [fileUrl, userId]);
 
         res.status(200).json({ 
@@ -107,7 +96,6 @@ router.post('/me/profile-image', authMiddleware, upload.single('profileImage'), 
     }
 });
 
-// PUT /api/users/me - 내 정보 수정하기
 router.put('/me', authMiddleware, async (req, res) => {
     const { userId } = req.user;
     const { companyName, representativeName, address, businessLocation, managerName, managerPhone, industryCodes, interests, agreed_to_marketing } = req.body;
@@ -132,7 +120,6 @@ router.put('/me', authMiddleware, async (req, res) => {
 });
 
 
-// DELETE /api/users/me - 회원 탈퇴
 router.delete('/me', authMiddleware, async (req, res) => {
     try {
         const { password } = req.body;
@@ -142,7 +129,6 @@ router.delete('/me', authMiddleware, async (req, res) => {
             return res.status(400).json({ success: false, message: '비밀번호를 입력해주세요.' });
         }
 
-        // ★★★ 1. 삭제하기 전에, S3에서 지워야 할 이미지 URL과 비밀번호를 DB에서 가져옵니다. ★★★
         const userResult = await db.query('SELECT password, profile_image_url FROM users WHERE id = $1', [userId]);
         if (userResult.rows.length === 0) {
             return res.status(404).json({ success: false, message: '사용자 정보를 찾을 수 없습니다.' });
@@ -461,6 +447,29 @@ router.put('/me/referral', authMiddleware, async (req, res) => {
         res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     } finally {
         client.release();
+    }
+});
+
+
+router.delete('/me/referral', authMiddleware, async (req, res) => {
+    const { userId } = req.user;
+    try {
+        const query = `
+            UPDATE users 
+            SET used_referral_code = NULL, recommending_organization_id = NULL 
+            WHERE id = $1
+            RETURNING id;
+        `;
+        const { rowCount } = await db.query(query, [userId]);
+
+        if (rowCount === 0) {
+            return res.status(404).json({ success: false, message: '사용자를 찾을 수 없습니다.' });
+        }
+        res.status(200).json({ success: true, message: '추천 코드 정보가 삭제되었습니다.' });
+
+    } catch (error) {
+        console.error("추천 코드 삭제 에러:", error);
+        res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
     }
 });
 
