@@ -384,29 +384,28 @@ router.delete('/:id', authMiddleware, async (req, res) => {
 });
 
 router.get('/check-eligibility', authMiddleware, async (req, res) => {
-    const { userId, role } = req.user; 
+    const { userId, role } = req.user;
     try {
+        // 1. 관리자 역할은 항상 진단 가능
         const adminRoles = ['super_admin', 'vice_super_admin', 'content_manager', 'user_manager'];
         if (adminRoles.includes(role)) {
             return res.status(200).json({ success: true, eligible: true });
         }
 
-        const userRes = await db.query('SELECT used_referral_code FROM users WHERE id = $1', [userId]);
-        const userReferralCode = userRes.rows[0]?.used_referral_code;
+        // 2. 일반 사용자의 경우, users 테이블과 referral_codes 테이블을 JOIN하여 한 번에 유효성 검사
+        const query = `
+            SELECT 1
+            FROM users u
+            JOIN referral_codes rc ON u.used_referral_code = rc.code
+            WHERE u.id = $1 AND (rc.expires_at IS NULL OR rc.expires_at > NOW())
+        `;
+        const result = await db.query(query, [userId]);
 
-        if (!userReferralCode) {
-            return res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 없습니다.' });
-        }
-
-        const codeRes = await db.query(
-            'SELECT id FROM referral_codes WHERE code = $1 AND (expires_at IS NULL OR expires_at > NOW())',
-            [userReferralCode]
-        );
-
-        if (codeRes.rows.length > 0) {
+        // 3. 조회 결과가 있으면(1줄 이상) 자격이 있는 것임
+        if (result.rows.length > 0) {
             res.status(200).json({ success: true, eligible: true });
         } else {
-            res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 유효하지 않습니다.' });
+            res.status(200).json({ success: true, eligible: false, message: '등록된 추천 코드가 유효하지 않거나 없습니다.' });
         }
 
     } catch (error) {
