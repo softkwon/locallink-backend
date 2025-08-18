@@ -216,11 +216,7 @@ router.post('/check-email', async (req, res) => {
     }
 });
 
-/**
- * 파일명: routes/auth.js
- * 수정 위치: POST /request-password-reset
- * 수정 일시: 2025-07-03 16:11
- */
+
 router.post('/request-password-reset', async (req, res) => {
     try {
         const { email } = req.body;
@@ -231,15 +227,27 @@ router.post('/request-password-reset', async (req, res) => {
             const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
             const expires = new Date(Date.now() + 15 * 60 * 1000);
 
-            // ★★★ 디버깅 로그 추가 ★★★
             console.log('--- [1. TOKEN CREATED] ---');
             console.log('DB에 저장될 Hashed Token:', hashedToken);
 
             await db.query('UPDATE users SET reset_token = $1, reset_token_expires = $2 WHERE email = $3', [hashedToken, expires, email]);
 
             const resetLink = `${process.env.FRONTEND_URL}/main_login_reset-password.html?token=${token}`;
-            const emailSubject = '[LocalLink] 비밀번호 재설정 요청';
-            const emailHtml = `<p>비밀번호를 재설정하려면 아래 링크를 클릭해주세요. 이 링크는 15분간 유효합니다.</p><a href="${resetLink}">${resetLink}</a>`;
+            const emailSubject = '[ESGLink] 비밀번호 재설정 요청';
+            const emailHtml = `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+                    <h2 style="color: #333;">ESGlink 비밀번호 재설정</h2>
+                    <p>안녕하세요,</p>
+                    <p>비밀번호 재설정을 요청하셨습니다. 아래 버튼을 클릭하여 비밀번호를 다시 설정해주세요.</p>
+                    <p style="text-align: center; margin: 30px 0;">
+                        <a href="${resetLink}" style="background-color: #007bff; color: white; padding: 15px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">비밀번호 재설정하기</a>
+                    </p>
+                    <p>이 링크는 <strong>15분</strong>간 유효합니다.</p>
+                    <p>만약 직접 요청하지 않으셨다면 이 이메일을 무시하셔도 됩니다.</p>
+                    <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="font-size: 0.8em; color: #777;">본 메일은 발신 전용입니다.</p>
+                </div>
+            `;
             
             await sendEmail(email, emailSubject, emailHtml);
         }
@@ -253,11 +261,6 @@ router.post('/request-password-reset', async (req, res) => {
 });
 
 
-/**
- * 파일명: routes/auth.js
- * 수정 위치: POST /api/auth/reset-password
- * 수정 일시: 2025-07-03 15:11
- */
 router.post('/reset-password', async (req, res) => {
     const { token, password, passwordConfirm } = req.body;
 
@@ -363,7 +366,6 @@ router.get('/verify-email', async (req, res) => {
     }
 });
 
-// --- ▼▼▼ 이메일 인증코드 발송 API 추가 ▼▼▼ ---
 router.post('/send-verification-email', async (req, res) => {
     try {
         const { email } = req.body;
@@ -371,20 +373,31 @@ router.post('/send-verification-email', async (req, res) => {
             return res.status(400).json({ success: false, message: '이메일 주소를 입력해주세요.' });
         }
 
-        // 이메일 중복 체크
         const existingUser = await db.query('SELECT id FROM users WHERE email = $1', [email]);
         if (existingUser.rows.length > 0) {
             return res.status(409).json({ success: false, message: '이미 가입된 이메일입니다.' });
         }
 
-        const code = crypto.randomInt(100000, 999999).toString(); // 6자리 난수 생성
-        const expires = Date.now() + 5 * 60 * 1000; // 5분 후 만료
+        const code = crypto.randomInt(100000, 999999).toString();
+        const expires = Date.now() + 5 * 60 * 1000; 
 
-        // 생성된 코드와 만료 시간을 서버 메모리에 저장
         verificationCodes[email] = { code, expires };
 
-        const emailSubject = '[LocalLink] 회원가입 이메일 인증번호';
-        const emailHtml = `<p>LocalLink 회원가입을 위한 인증번호입니다.</p><h2>${code}</h2><p>이 인증번호는 5분간 유효합니다.</p>`;
+        const emailSubject = '[ESGlink] 회원가입을 위한 인증번호입니다.';
+        
+        const emailHtml = `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+                <h2 style="color: #333;">ESGlink 회원가입 인증번호</h2>
+                <p>ESGlink에 가입해주셔서 감사합니다!</p>
+                <p>회원가입을 완료하려면 아래 인증번호를 입력해주세요.</p>
+                <div style="background-color: #f8f9fa; text-align: center; padding: 20px; margin: 20px 0; border-radius: 5px;">
+                    <h3 style="font-size: 2em; letter-spacing: 5px; margin: 0;">${code}</h3>
+                </div>
+                <p>이 인증번호는 <strong>5분</strong>간 유효합니다.</p>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+                <p style="font-size: 0.8em; color: #777;">본 메일은 발신 전용입니다.</p>
+            </div>
+        `;
 
         const emailSent = await sendEmail(email, emailSubject, emailHtml);
 
