@@ -3247,4 +3247,14 @@ router.delete('/major-company-programs/:id', authMiddleware, checkAdminPermissio
     }
 });
 
+router.get('/major-companies-public', async (req, res) => {
+    try {
+        const { rows } = await db.query('SELECT id, company_name FROM major_companies ORDER BY company_name ASC');
+        res.status(200).json({ success: true, companies: rows });
+    } catch (error) {
+        console.error("대기업 목록(공개) 조회 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류' });
+    }
+});
+
 module.exports = router;

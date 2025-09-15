@@ -92,7 +92,8 @@ router.post('/', authMiddleware, async (req, res) => {
     const {
         companyName, representativeName, industryCodes, establishmentYear,
         employeeCount, productsServices, recentSales, recentOperatingProfit,
-        exportPercentage, isListed, companySize, mainBusinessRegion
+        exportPercentage, isListed, companySize, mainBusinessRegion,
+        selected_major_company_id
     } = req.body;
 
     try {
@@ -115,15 +116,16 @@ router.post('/', authMiddleware, async (req, res) => {
                 user_id, company_name, representative_name, industry_codes, establishment_year,
                 employee_count, products_services, recent_sales, recent_operating_profit,
                 export_percentage, is_listed, company_size, main_business_region,
-                diagnosis_type, status, is_free
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'simple', 'in_progress', $14)
+                selected_major_company_id, diagnosis_type, status, is_free
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, &14, 'simple', 'in_progress', $14)
             RETURNING id;
         `;
         const values = [
             userId, companyName, representativeName, industryCodes, establishmentYear,
             employeeCount, productsServices, recentSales, recentOperatingProfit,
             exportPercentage, isListed, companySize, mainBusinessRegion,
-            isFree // is_free 값 추가
+            selected_major_company_id,
+            isFree 
         ];
 
         const result = await db.query(query, values);
@@ -144,7 +146,8 @@ router.put('/:id', authMiddleware, async (req, res) => {
     const {
         companyName, representativeName, industryCodes, establishmentYear,
         employeeCount, productsServices, recentSales, recentOperatingProfit,
-        exportPercentage, isListed, companySize, mainBusinessRegion
+        exportPercentage, isListed, companySize, mainBusinessRegion,
+        selected_major_company_id
     } = req.body;
 
     try {
@@ -153,14 +156,16 @@ router.put('/:id', authMiddleware, async (req, res) => {
             SET 
                 company_name = $1, representative_name = $2, industry_codes = $3, establishment_year = $4,
                 employee_count = $5, products_services = $6, recent_sales = $7, recent_operating_profit = $8,
-                export_percentage = $9, is_listed = $10, company_size = $11, main_business_region = $12
-            WHERE id = $13 AND user_id = $14
+                export_percentage = $9, is_listed = $10, company_size = $11, main_business_region = $12,
+                selected_major_company_id = $13
+            WHERE id = $14 AND user_id = $15
             RETURNING id;
         `;
         const values = [
             companyName, representativeName, industryCodes, establishmentYear,
             employeeCount, productsServices, recentSales, recentOperatingProfit,
             exportPercentage, isListed, companySize, mainBusinessRegion,
+            selected_major_company_id || null,
             diagnosisId, userId
         ];
 
