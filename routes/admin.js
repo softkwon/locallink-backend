@@ -3116,7 +3116,7 @@ router.get('/solution-categories-public', async (req, res) => {
 });
 
 // GET /api/admin/major-companies - 모든 대기업 목록 조회
-router.get('/major-companies', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+router.get('/major-companies', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM major_companies ORDER BY company_name ASC');
         res.status(200).json({ success: true, companies: rows });
@@ -3126,7 +3126,8 @@ router.get('/major-companies', authMiddleware, checkAdminPermission(['super_admi
     }
 });
 
-router.post('/major-companies', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+// POST /api/admin/major-companies - 새 대기업 추가
+router.post('/major-companies', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { company_name } = req.body;
     if (!company_name) {
         return res.status(400).json({ success: false, message: '회사명은 필수입니다.' });
@@ -3136,7 +3137,7 @@ router.post('/major-companies', authMiddleware, checkAdminPermission(['super_adm
         const { rows } = await db.query(query, [company_name]);
         res.status(201).json({ success: true, message: '새로운 대기업이 추가되었습니다.', company: rows[0] });
     } catch (error) {
-        if (error.code === '23505') { 
+        if (error.code === '23505') { // unique_violation
             return res.status(409).json({ success: false, message: '이미 존재하는 회사명입니다.' });
         }
         console.error("대기업 추가 에러:", error);
@@ -3144,7 +3145,8 @@ router.post('/major-companies', authMiddleware, checkAdminPermission(['super_adm
     }
 });
 
-router.put('/major-companies/:id', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+// PUT /api/admin/major-companies/:id - 대기업 정보 수정
+router.put('/major-companies/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { id } = req.params;
     const { company_name } = req.body;
     if (!company_name) {
@@ -3166,7 +3168,8 @@ router.put('/major-companies/:id', authMiddleware, checkAdminPermission(['super_
     }
 });
 
-router.delete('/major-companies/:id', authMiddleware, checkAdminPermission(['super_admin']), async (req, res) => {
+// DELETE /api/admin/major-companies/:id - 대기업 삭제
+router.delete('/major-companies/:id', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     const { id } = req.params;
     const client = await db.pool.connect();
     try {
@@ -3187,7 +3190,11 @@ router.delete('/major-companies/:id', authMiddleware, checkAdminPermission(['sup
     }
 });
 
-router.get('/major-company-programs/:companyId', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+
+// --- 대기업별 대표 프로그램 관리 API ---
+
+// GET /api/admin/major-company-programs/:companyId - 특정 대기업의 프로그램 목록 조회
+router.get('/major-company-programs/:companyId', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { companyId } = req.params;
     try {
         const query = 'SELECT * FROM major_company_programs WHERE company_id = $1 ORDER BY id DESC';
@@ -3199,7 +3206,8 @@ router.get('/major-company-programs/:companyId', authMiddleware, checkAdminPermi
     }
 });
 
-router.post('/major-company-programs', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+// POST /api/admin/major-company-programs - 새 대표 프로그램 추가
+router.post('/major-company-programs', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { company_id, program_name, program_description, link_url } = req.body;
     if (!company_id || !program_name) {
         return res.status(400).json({ success: false, message: '기업 ID와 프로그램명은 필수입니다.' });
@@ -3214,7 +3222,8 @@ router.post('/major-company-programs', authMiddleware, checkAdminPermission(['su
     }
 });
 
-router.put('/major-company-programs/:id', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+// PUT /api/admin/major-company-programs/:id - 대표 프로그램 수정
+router.put('/major-company-programs/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { id } = req.params;
     const { program_name, program_description, link_url } = req.body;
     if (!program_name) {
@@ -3233,7 +3242,8 @@ router.put('/major-company-programs/:id', authMiddleware, checkAdminPermission([
     }
 });
 
-router.delete('/major-company-programs/:id', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+// DELETE /api/admin/major-company-programs/:id - 대표 프로그램 삭제
+router.delete('/major-company-programs/:id', authMiddleware, checkPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
     const { id } = req.params;
     try {
         const { rowCount } = await db.query('DELETE FROM major_company_programs WHERE id = $1', [id]);
