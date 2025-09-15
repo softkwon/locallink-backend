@@ -3115,4 +3115,136 @@ router.get('/solution-categories-public', async (req, res) => {
     }
 });
 
+// GET /api/admin/major-companies - 모든 대기업 목록 조회
+router.get('/major-companies', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+    try {
+        const { rows } = await db.query('SELECT * FROM major_companies ORDER BY company_name ASC');
+        res.status(200).json({ success: true, companies: rows });
+    } catch (error) {
+        console.error("대기업 목록 조회 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
+
+router.post('/major-companies', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+    const { company_name } = req.body;
+    if (!company_name) {
+        return res.status(400).json({ success: false, message: '회사명은 필수입니다.' });
+    }
+    try {
+        const query = 'INSERT INTO major_companies (company_name) VALUES ($1) RETURNING *';
+        const { rows } = await db.query(query, [company_name]);
+        res.status(201).json({ success: true, message: '새로운 대기업이 추가되었습니다.', company: rows[0] });
+    } catch (error) {
+        if (error.code === '23505') { 
+            return res.status(409).json({ success: false, message: '이미 존재하는 회사명입니다.' });
+        }
+        console.error("대기업 추가 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
+
+router.put('/major-companies/:id', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+    const { id } = req.params;
+    const { company_name } = req.body;
+    if (!company_name) {
+        return res.status(400).json({ success: false, message: '회사명은 필수입니다.' });
+    }
+    try {
+        const query = 'UPDATE major_companies SET company_name = $1 WHERE id = $2 RETURNING *';
+        const { rows } = await db.query(query, [company_name, id]);
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: '해당 기업을 찾을 수 없습니다.' });
+        }
+        res.status(200).json({ success: true, message: '기업 정보가 수정되었습니다.', company: rows[0] });
+    } catch (error) {
+        if (error.code === '23505') {
+            return res.status(409).json({ success: false, message: '이미 존재하는 회사명입니다.' });
+        }
+        console.error("대기업 수정 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
+
+router.delete('/major-companies/:id', authMiddleware, checkAdminPermission(['super_admin']), async (req, res) => {
+    const { id } = req.params;
+    const client = await db.pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM major_company_programs WHERE company_id = $1', [id]);
+        const { rowCount } = await client.query('DELETE FROM major_companies WHERE id = $1', [id]);
+        if (rowCount === 0) {
+            return res.status(404).json({ success: false, message: '삭제할 기업을 찾을 수 없습니다.' });
+        }
+        await client.query('COMMIT');
+        res.status(200).json({ success: true, message: '기업 및 관련 프로그램 정보가 삭제되었습니다.' });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error("대기업 삭제 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    } finally {
+        client.release();
+    }
+});
+
+router.get('/major-company-programs/:companyId', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+    const { companyId } = req.params;
+    try {
+        const query = 'SELECT * FROM major_company_programs WHERE company_id = $1 ORDER BY id DESC';
+        const { rows } = await db.query(query, [companyId]);
+        res.status(200).json({ success: true, programs: rows });
+    } catch (error) {
+        console.error("대표 프로그램 조회 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
+
+router.post('/major-company-programs', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+    const { company_id, program_name, program_description, link_url } = req.body;
+    if (!company_id || !program_name) {
+        return res.status(400).json({ success: false, message: '기업 ID와 프로그램명은 필수입니다.' });
+    }
+    try {
+        const query = 'INSERT INTO major_company_programs (company_id, program_name, program_description, link_url) VALUES ($1, $2, $3, $4) RETURNING *';
+        const { rows } = await db.query(query, [company_id, program_name, program_description, link_url]);
+        res.status(201).json({ success: true, message: '새로운 대표 프로그램이 추가되었습니다.', program: rows[0] });
+    } catch (error) {
+        console.error("대표 프로그램 추가 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
+
+router.put('/major-company-programs/:id', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+    const { id } = req.params;
+    const { program_name, program_description, link_url } = req.body;
+    if (!program_name) {
+        return res.status(400).json({ success: false, message: '프로그램명은 필수입니다.' });
+    }
+    try {
+        const query = 'UPDATE major_company_programs SET program_name = $1, program_description = $2, link_url = $3 WHERE id = $4 RETURNING *';
+        const { rows } = await db.query(query, [program_name, program_description, link_url, id]);
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: '해당 프로그램을 찾을 수 없습니다.' });
+        }
+        res.status(200).json({ success: true, message: '프로그램 정보가 수정되었습니다.', program: rows[0] });
+    } catch (error) {
+        console.error("대표 프로그램 수정 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
+
+router.delete('/major-company-programs/:id', authMiddleware, checkAdminPermission(['super_admin', 'vice_super_admin']), async (req, res) => {
+    const { id } = req.params;
+    try {
+        const { rowCount } = await db.query('DELETE FROM major_company_programs WHERE id = $1', [id]);
+        if (rowCount === 0) {
+            return res.status(404).json({ success: false, message: '삭제할 프로그램을 찾을 수 없습니다.' });
+        }
+        res.status(200).json({ success: true, message: '프로그램이 삭제되었습니다.' });
+    } catch (error) {
+        console.error("대표 프로그램 삭제 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
+
 module.exports = router;
