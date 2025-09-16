@@ -3267,8 +3267,9 @@ router.get('/major-companies-public', async (req, res) => {
     }
 });
 
-// --- K-ESG 지표 관리 API ---
-// GET /api/admin/k-esg-indicators - 모든 K-ESG 지표 목록 조회 (인증 필요)
+
+// --- K-ESG 지표 관리 API (V3 - 완성본) ---
+// GET /api/admin/k-esg-indicators - 모든 K-ESG 지표 목록 조회
 router.get('/k-esg-indicators', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
     try {
         const { rows } = await db.query('SELECT * FROM k_esg_indicators ORDER BY domain, category, indicator_code');
