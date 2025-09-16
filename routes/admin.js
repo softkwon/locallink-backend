@@ -3272,7 +3272,7 @@ router.get('/major-companies-public', async (req, res) => {
 // GET /api/admin/k-esg-indicators - 모든 K-ESG 지표 목록 조회 (인증 필요)
 router.get('/k-esg-indicators', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
     try {
-        const { rows } = await db.query('SELECT * FROM k_esg_indicators ORDER BY category, indicator_code');
+        const { rows } = await db.query('SELECT * FROM k_esg_indicators ORDER BY domain, category, indicator_code');
         res.status(200).json({ success: true, indicators: rows });
     } catch (error) {
         console.error("K-ESG 지표 조회 에러:", error);
@@ -3280,16 +3280,22 @@ router.get('/k-esg-indicators', authMiddleware, checkPermission(['super_admin', 
     }
 });
 
-
 // POST /api/admin/k-esg-indicators - 새 지표 추가
 router.post('/k-esg-indicators', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
-    const { category, indicator_code, description } = req.body;
-    if (!category || !indicator_code || !description) {
-        return res.status(400).json({ success: false, message: '모든 필드는 필수입니다.' });
+    const { domain, category, indicator_code, indicator_name, overview, objective, detailed_objective, expected_result, weight, max_score, calculation_formula, scope, content } = req.body;
+    if (!domain || !category || !indicator_code || !indicator_name) {
+        return res.status(400).json({ success: false, message: '영역, 범주, 지표코드, 진단항목은 필수입니다.' });
     }
     try {
-        const query = 'INSERT INTO k_esg_indicators (category, indicator_code, description) VALUES ($1, $2, $3) RETURNING *';
-        const { rows } = await db.query(query, [category, indicator_code, description]);
+        const query = `
+            INSERT INTO k_esg_indicators (
+                domain, category, indicator_code, indicator_name, overview, objective, 
+                detailed_objective, expected_result, weight, max_score, calculation_formula, scope, content
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`;
+        const { rows } = await db.query(query, [
+            domain, category, indicator_code, indicator_name, overview, objective, 
+            detailed_objective, expected_result, weight || null, max_score || null, calculation_formula, scope, content
+        ]);
         res.status(201).json({ success: true, message: '새 K-ESG 지표가 추가되었습니다.', indicator: rows[0] });
     } catch (error) {
         if (error.code === '23505') return res.status(409).json({ success: false, message: '이미 존재하는 지표 코드입니다.' });
@@ -3301,13 +3307,21 @@ router.post('/k-esg-indicators', authMiddleware, checkPermission(['super_admin']
 // PUT /api/admin/k-esg-indicators/:id - 지표 수정
 router.put('/k-esg-indicators/:id', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     const { id } = req.params;
-    const { category, indicator_code, description } = req.body;
-    if (!category || !indicator_code || !description) {
-        return res.status(400).json({ success: false, message: '모든 필드는 필수입니다.' });
+    const { domain, category, indicator_code, indicator_name, overview, objective, detailed_objective, expected_result, weight, max_score, calculation_formula, scope, content } = req.body;
+    if (!domain || !category || !indicator_code || !indicator_name) {
+        return res.status(400).json({ success: false, message: '영역, 범주, 지표코드, 진단항목은 필수입니다.' });
     }
     try {
-        const query = 'UPDATE k_esg_indicators SET category = $1, indicator_code = $2, description = $3 WHERE id = $4 RETURNING *';
-        const { rows } = await db.query(query, [category, indicator_code, description, id]);
+        const query = `
+            UPDATE k_esg_indicators SET 
+                domain = $1, category = $2, indicator_code = $3, indicator_name = $4, overview = $5, 
+                objective = $6, detailed_objective = $7, expected_result = $8, weight = $9, 
+                max_score = $10, calculation_formula = $11, scope = $12, content = $13, updated_at = NOW()
+            WHERE id = $14 RETURNING *`;
+        const { rows } = await db.query(query, [
+            domain, category, indicator_code, indicator_name, overview, objective, 
+            detailed_objective, expected_result, weight || null, max_score || null, calculation_formula, scope, content, id
+        ]);
         if (rows.length === 0) return res.status(404).json({ success: false, message: '지표를 찾을 수 없습니다.' });
         res.status(200).json({ success: true, message: '지표가 수정되었습니다.', indicator: rows[0] });
     } catch (error) {
@@ -3333,7 +3347,14 @@ router.delete('/k-esg-indicators/:id', authMiddleware, checkPermission(['super_a
 // GET /api/admin/k-esg-indicators/export - CSV 내보내기
 router.get('/k-esg-indicators/export', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     try {
-        const { rows } = await db.query('SELECT category, indicator_code, description FROM k_esg_indicators ORDER BY category, indicator_code');
+        const query = `
+            SELECT 
+                domain AS "영역", category AS "범주", indicator_code AS "지표코드", indicator_name AS "진단항목",
+                overview AS "개요", objective AS "목표", detailed_objective AS "세부목표", expected_result AS "결과",
+                weight AS "가중치", max_score AS "총배점", calculation_formula AS "계산식", scope AS "범위", content AS "내용"
+            FROM k_esg_indicators ORDER BY domain, category, indicator_code
+        `;
+        const { rows } = await db.query(query);
         const csvString = stringify(rows, { header: true });
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="k-esg-indicators-${new Date().toISOString().slice(0,10)}.csv"`);
@@ -3353,15 +3374,48 @@ router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_
         const records = parse(req.file.buffer, { columns: true, skip_empty_lines: true });
         await client.query('BEGIN');
         for (const record of records) {
-            const { category, indicator_code, description } = record;
-            if (category && indicator_code && description) {
+            // CSV 파일의 한글 헤더를 DB 컬럼명에 맞게 매핑합니다.
+            const data = {
+                domain: record['영역'],
+                category: record['범주'],
+                indicator_code: record['지표코드'],
+                indicator_name: record['진단항목'],
+                overview: record['개요'],
+                objective: record['목표'],
+                detailed_objective: record['세부목표'],
+                expected_result: record['결과'],
+                weight: record['가중치'] || null,
+                max_score: record['총배점'] || null,
+                calculation_formula: record['계산식'],
+                scope: record['범위'],
+                content: record['내용']
+            };
+            
+            if (data.domain && data.category && data.indicator_code && data.indicator_name) {
                 const query = `
-                    INSERT INTO k_esg_indicators (category, indicator_code, description) VALUES ($1, $2, $3)
+                    INSERT INTO k_esg_indicators (
+                        domain, category, indicator_code, indicator_name, overview, objective, 
+                        detailed_objective, expected_result, weight, max_score, calculation_formula, scope, content
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     ON CONFLICT (indicator_code) DO UPDATE SET
+                        domain = EXCLUDED.domain,
                         category = EXCLUDED.category,
-                        description = EXCLUDED.description;
+                        indicator_name = EXCLUDED.indicator_name,
+                        overview = EXCLUDED.overview,
+                        objective = EXCLUDED.objective,
+                        detailed_objective = EXCLUDED.detailed_objective,
+                        expected_result = EXCLUDED.expected_result,
+                        weight = EXCLUDED.weight,
+                        max_score = EXCLUDED.max_score,
+                        calculation_formula = EXCLUDED.calculation_formula,
+                        scope = EXCLUDED.scope,
+                        content = EXCLUDED.content,
+                        updated_at = NOW();
                 `;
-                await client.query(query, [category, indicator_code, description]);
+                await client.query(query, [
+                    data.domain, data.category, data.indicator_code, data.indicator_name, data.overview, data.objective, 
+                    data.detailed_objective, data.expected_result, data.weight, data.max_score, data.calculation_formula, data.scope, data.content
+                ]);
             }
         }
         await client.query('COMMIT');
@@ -3369,7 +3423,7 @@ router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_
     } catch (error) {
         await client.query('ROLLBACK');
         console.error("K-ESG 데이터 Import 에러:", error);
-        res.status(500).json({ success: false, message: 'Import 중 서버 에러 발생' });
+        res.status(500).json({ success: false, message: 'Import 중 서버 에러 발생. CSV 파일의 헤더명(영역, 범주 등)이 정확한지 확인해주세요.' });
     } finally {
         client.release();
     }
