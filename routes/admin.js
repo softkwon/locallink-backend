@@ -3267,4 +3267,112 @@ router.get('/major-companies-public', async (req, res) => {
     }
 });
 
+// --- K-ESG 지표 관리 API ---
+
+// GET /api/admin/k-esg-indicators - 모든 K-ESG 지표 목록 조회 (인증 필요)
+router.get('/k-esg-indicators', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
+    try {
+        const { rows } = await db.query('SELECT * FROM k_esg_indicators ORDER BY category, indicator_code');
+        res.status(200).json({ success: true, indicators: rows });
+    } catch (error) {
+        console.error("K-ESG 지표 조회 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
+
+
+// POST /api/admin/k-esg-indicators - 새 지표 추가
+router.post('/k-esg-indicators', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
+    const { category, indicator_code, description } = req.body;
+    if (!category || !indicator_code || !description) {
+        return res.status(400).json({ success: false, message: '모든 필드는 필수입니다.' });
+    }
+    try {
+        const query = 'INSERT INTO k_esg_indicators (category, indicator_code, description) VALUES ($1, $2, $3) RETURNING *';
+        const { rows } = await db.query(query, [category, indicator_code, description]);
+        res.status(201).json({ success: true, message: '새 K-ESG 지표가 추가되었습니다.', indicator: rows[0] });
+    } catch (error) {
+        if (error.code === '23505') return res.status(409).json({ success: false, message: '이미 존재하는 지표 코드입니다.' });
+        console.error("K-ESG 지표 추가 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류' });
+    }
+});
+
+// PUT /api/admin/k-esg-indicators/:id - 지표 수정
+router.put('/k-esg-indicators/:id', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
+    const { id } = req.params;
+    const { category, indicator_code, description } = req.body;
+    if (!category || !indicator_code || !description) {
+        return res.status(400).json({ success: false, message: '모든 필드는 필수입니다.' });
+    }
+    try {
+        const query = 'UPDATE k_esg_indicators SET category = $1, indicator_code = $2, description = $3 WHERE id = $4 RETURNING *';
+        const { rows } = await db.query(query, [category, indicator_code, description, id]);
+        if (rows.length === 0) return res.status(404).json({ success: false, message: '지표를 찾을 수 없습니다.' });
+        res.status(200).json({ success: true, message: '지표가 수정되었습니다.', indicator: rows[0] });
+    } catch (error) {
+        if (error.code === '23505') return res.status(409).json({ success: false, message: '이미 존재하는 지표 코드입니다.' });
+        console.error("K-ESG 지표 수정 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류' });
+    }
+});
+
+// DELETE /api/admin/k-esg-indicators/:id - 지표 삭제
+router.delete('/k-esg-indicators/:id', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
+    const { id } = req.params;
+    try {
+        const { rowCount } = await db.query('DELETE FROM k_esg_indicators WHERE id = $1', [id]);
+        if (rowCount === 0) return res.status(404).json({ success: false, message: '삭제할 지표를 찾을 수 없습니다.' });
+        res.status(200).json({ success: true, message: '지표가 삭제되었습니다.' });
+    } catch (error) {
+        console.error("K-ESG 지표 삭제 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류' });
+    }
+});
+
+// GET /api/admin/k-esg-indicators/export - CSV 내보내기
+router.get('/k-esg-indicators/export', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
+    try {
+        const { rows } = await db.query('SELECT category, indicator_code, description FROM k_esg_indicators ORDER BY category, indicator_code');
+        const csvString = stringify(rows, { header: true });
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="k-esg-indicators-${new Date().toISOString().slice(0,10)}.csv"`);
+        res.status(200).end('\uFEFF' + csvString);
+    } catch (error) {
+        console.error("K-ESG 데이터 Export 에러:", error);
+        res.status(500).send('Export 중 서버 에러 발생');
+    }
+});
+
+// POST /api/admin/k-esg-indicators/import - CSV 가져오기
+router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_admin']), upload.single('csvFile'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ success: false, message: 'CSV 파일이 없습니다.' });
+    
+    const client = await db.pool.connect();
+    try {
+        const records = parse(req.file.buffer, { columns: true, skip_empty_lines: true });
+        await client.query('BEGIN');
+        for (const record of records) {
+            const { category, indicator_code, description } = record;
+            if (category && indicator_code && description) {
+                const query = `
+                    INSERT INTO k_esg_indicators (category, indicator_code, description) VALUES ($1, $2, $3)
+                    ON CONFLICT (indicator_code) DO UPDATE SET
+                        category = EXCLUDED.category,
+                        description = EXCLUDED.description;
+                `;
+                await client.query(query, [category, indicator_code, description]);
+            }
+        }
+        await client.query('COMMIT');
+        res.status(200).json({ success: true, message: `${records.length}개의 지표가 성공적으로 추가/업데이트되었습니다.` });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error("K-ESG 데이터 Import 에러:", error);
+        res.status(500).json({ success: false, message: 'Import 중 서버 에러 발생' });
+    } finally {
+        client.release();
+    }
+});
+
 module.exports = router;
