@@ -3268,7 +3268,6 @@ router.get('/major-companies-public', async (req, res) => {
 });
 
 // --- K-ESG 지표 관리 API ---
-
 // GET /api/admin/k-esg-indicators - 모든 K-ESG 지표 목록 조회 (인증 필요)
 router.get('/k-esg-indicators', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
     try {
@@ -3344,18 +3343,30 @@ router.delete('/k-esg-indicators/:id', authMiddleware, checkPermission(['super_a
     }
 });
 
-// GET /api/admin/k-esg-indicators/export - CSV 내보내기
+// GET /api/admin/k-esg-indicators/export - CSV 내보내기 (수정됨)
 router.get('/k-esg-indicators/export', authMiddleware, checkPermission(['super_admin']), async (req, res) => {
     try {
-        const query = `
-            SELECT 
-                domain AS "영역", category AS "범주", indicator_code AS "지표코드", indicator_name AS "진단항목",
-                overview AS "개요", objective AS "목표", detailed_objective AS "세부목표", expected_result AS "결과",
-                weight AS "가중치", max_score AS "총배점", calculation_formula AS "계산식", scope AS "범위", content AS "내용"
-            FROM k_esg_indicators ORDER BY domain, category, indicator_code
-        `;
-        const { rows } = await db.query(query);
-        const csvString = stringify(rows, { header: true });
+        const { rows } = await db.query('SELECT * FROM k_esg_indicators ORDER BY domain, category, indicator_code');
+        
+        // ★★★ DB에 데이터가 없어도 헤더가 있는 빈 파일을 생성하도록 수정 ★★★
+        const columns = {
+            domain: "영역",
+            category: "범주",
+            indicator_code: "지표코드",
+            indicator_name: "진단항목",
+            overview: "개요",
+            objective: "목표",
+            detailed_objective: "세부목표",
+            expected_result: "결과",
+            weight: "가중치",
+            max_score: "총배점",
+            calculation_formula: "계산식",
+            scope: "범위",
+            content: "내용"
+        };
+
+        const csvString = stringify(rows, { header: true, columns: columns });
+
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="k-esg-indicators-${new Date().toISOString().slice(0,10)}.csv"`);
         res.status(200).end('\uFEFF' + csvString);
@@ -3365,7 +3376,7 @@ router.get('/k-esg-indicators/export', authMiddleware, checkPermission(['super_a
     }
 });
 
-// POST /api/admin/k-esg-indicators/import - CSV 가져오기
+// POST /api/admin/k-esg-indicators/import - CSV 가져오기 (수정됨)
 router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_admin']), upload.single('csvFile'), async (req, res) => {
     if (!req.file) return res.status(400).json({ success: false, message: 'CSV 파일이 없습니다.' });
     
@@ -3374,7 +3385,7 @@ router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_
         const records = parse(req.file.buffer, { columns: true, skip_empty_lines: true });
         await client.query('BEGIN');
         for (const record of records) {
-            // CSV 파일의 한글 헤더를 DB 컬럼명에 맞게 매핑합니다.
+            // ★★★ CSV의 한글 헤더를 DB 컬럼명에 맞게 매핑합니다. ★★★
             const data = {
                 domain: record['영역'],
                 category: record['범주'],
@@ -3391,6 +3402,7 @@ router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_
                 content: record['내용']
             };
             
+            // 필수값이 있는 경우에만 DB에 저장/업데이트
             if (data.domain && data.category && data.indicator_code && data.indicator_name) {
                 const query = `
                     INSERT INTO k_esg_indicators (
@@ -3423,7 +3435,7 @@ router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_
     } catch (error) {
         await client.query('ROLLBACK');
         console.error("K-ESG 데이터 Import 에러:", error);
-        res.status(500).json({ success: false, message: 'Import 중 서버 에러 발생. CSV 파일의 헤더명(영역, 범주 등)이 정확한지 확인해주세요.' });
+        res.status(500).json({ success: false, message: 'Import 중 서버 에러 발생. CSV 파일의 헤더명("영역", "범주" 등)이 정확한지 확인해주세요.' });
     } finally {
         client.release();
     }
