@@ -3,6 +3,13 @@ const db = require('../db');
 const authMiddleware = require('../middleware/authMiddleware');
 const router = express.Router();
 
+function getCompanySizeName(sizeCode) {
+    const sizeMap = {
+        'large': '대기업', 'medium': '중견기업', 'small_medium': '중소기업', 'small_micro': '소기업/소상공인'
+    };
+    return sizeMap[sizeCode] || sizeCode;
+}
+
 router.get('/:diagnosisId', authMiddleware, async (req, res) => {
     const { diagnosisId } = req.params;
     const { userId } = req.user;
@@ -80,6 +87,25 @@ router.get('/:diagnosisId', authMiddleware, async (req, res) => {
             client.query('SELECT * FROM solution_categories')
         ]);
         
+        // ★★★ 4. 대기업 대표 프로그램 정보 조회 (새로 추가된 부분) ★★★
+        let selectedCompanyPrograms = null;
+        let industryCompanyPrograms = [];
+
+        if (diagnosis.selected_major_company_id) {
+            const selectedCompanyRes = await client.query(
+                `SELECT mc.id, mc.company_name, 
+                        (SELECT json_agg(mcp.*) FROM major_company_programs mcp WHERE mcp.company_id = mc.id) as programs
+                 FROM major_companies mc
+                 WHERE mc.id = $1`,
+                [diagnosis.selected_major_company_id]
+            );
+            if (selectedCompanyRes.rows.length > 0) {
+                selectedCompanyPrograms = selectedCompanyRes.rows[0];
+                if (!selectedCompanyPrograms.programs) {
+                    selectedCompanyPrograms.programs = [];
+                }
+            }
+        }        
         const userAnswers = answersRes.rows;
         const allPrograms = programsRes.rows;
         const allQuestions = questionsRes.rows;
