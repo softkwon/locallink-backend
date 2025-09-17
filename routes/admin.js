@@ -2931,6 +2931,39 @@ router.post(
     }
 );
 
+router.get('/applications/:applicationId/achieved-impact', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
+    const { applicationId } = req.params;
+    try {
+        const query = 'SELECT * FROM achieved_impact_data WHERE application_id = $1';
+        const { rows } = await db.query(query, [applicationId]);
+        res.status(200).json({ success: true, impactData: rows[0] || {} });
+    } catch (error) {
+        console.error("달성된 임팩트 조회 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
+
+router.post('/applications/:applicationId/achieved-impact', authMiddleware, checkPermission(['super_admin', 'vice_super_admin', 'content_manager']), async (req, res) => {
+    const { applicationId } = req.params;
+    const { achieved_scale_value, notes } = req.body;
+
+    try {
+        const query = `
+            INSERT INTO achieved_impact_data (application_id, achieved_scale_value, notes)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (application_id) DO UPDATE SET
+                achieved_scale_value = EXCLUDED.achieved_scale_value,
+                notes = EXCLUDED.notes,
+                updated_at = NOW()
+            RETURNING *;
+        `;
+        const { rows } = await db.query(query, [applicationId, achieved_scale_value || null, notes]);
+        res.status(200).json({ success: true, message: '달성된 임팩트 정보가 저장되었습니다.', impactData: rows[0] });
+    } catch (error) {
+        console.error("달성된 임팩트 저장 에러:", error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+});
 
 router.get(
     '/regulations', 
