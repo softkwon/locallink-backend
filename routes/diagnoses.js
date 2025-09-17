@@ -429,7 +429,6 @@ router.post('/quick-start', authMiddleware, async (req, res) => {
         const categoryTotalScores = { e: 0, s: 0, g: 0 };
         const categoryQuestionCounts = { e: 0, s: 0, g: 0 };
 
-        // 평균 점수를 E,S,G 카테고리별로 합산합니다.
         for (const [questionCode, avgScore] of avgScoresMap.entries()) {
             const category = (questionsMap.get(questionCode) || '').toLowerCase();
             if (category && categoryTotalScores.hasOwnProperty(category)) {
@@ -438,23 +437,15 @@ router.post('/quick-start', authMiddleware, async (req, res) => {
             }
         }
 
-        // 2. 기업 규모별 보정 계수를 정의하고 적용합니다.
-        const correctionFactors = {
-            'large': 1.0,
-            'medium': 0.9,
-            'small_medium': 0.8,
-            'small_micro': 0.7
-        };
-        const factor = correctionFactors[companySize] || 0.8; // 기본값은 중소기업
-
+        // ★★★ 2. 기업 규모별 보정 계수 로직을 제거합니다. ★★★
         const finalScores = {
-            e: (categoryQuestionCounts.e > 0 ? categoryTotalScores.e / categoryQuestionCounts.e : 50) * factor,
-            s: (categoryQuestionCounts.s > 0 ? categoryTotalScores.s / categoryQuestionCounts.s : 50) * factor,
-            g: (categoryQuestionCounts.g > 0 ? categoryTotalScores.g / categoryQuestionCounts.g : 50) * factor
+            e: categoryQuestionCounts.e > 0 ? categoryTotalScores.e / categoryQuestionCounts.e : 50,
+            s: categoryQuestionCounts.s > 0 ? categoryTotalScores.s / categoryQuestionCounts.s : 50,
+            g: categoryQuestionCounts.g > 0 ? categoryTotalScores.g / categoryQuestionCounts.g : 50
         };
         finalScores.total = (finalScores.e + finalScores.s + finalScores.g) / 3;
         
-        // 3. 사용자 정보에서 회사명, 대표자명을 가져옵니다.
+        // 3. 사용자 정보에서 회사명 등을 가져옵니다.
         const userRes = await client.query('SELECT company_name, representative FROM users WHERE id = $1', [userId]);
         const userInfo = userRes.rows[0] || {};
 
