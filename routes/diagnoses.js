@@ -403,6 +403,92 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     }
 });
 
+// POST /api/diagnoses/quick-start - 간편 진단 시작
+router.post('/quick-start', authMiddleware, async (req, res) => {
+    const { userId } = req.user;
+    const { industryCode, companySize } = req.body;
 
+    if (!industryCode || !companySize) {
+        return res.status(400).json({ success: false, message: '산업분류와 기업규모는 필수입니다.' });
+    }
+
+    const client = await db.pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. 해당 산업의 평균 점수와 전체 질문 목록을 가져옵니다.
+        const avgScoresRes = await client.query(
+            'SELECT question_code, average_score FROM industry_benchmark_scores WHERE industry_code = $1',
+            [industryCode]
+        );
+        const questionsRes = await client.query('SELECT question_code, esg_category FROM survey_questions');
+
+        const questionsMap = new Map(questionsRes.rows.map(q => [q.question_code, q.esg_category]));
+        const avgScoresMap = new Map(avgScoresRes.rows.map(s => [s.question_code, parseFloat(s.average_score)]));
+
+        const categoryTotalScores = { e: 0, s: 0, g: 0 };
+        const categoryQuestionCounts = { e: 0, s: 0, g: 0 };
+
+        // 평균 점수를 E,S,G 카테고리별로 합산합니다.
+        for (const [questionCode, avgScore] of avgScoresMap.entries()) {
+            const category = (questionsMap.get(questionCode) || '').toLowerCase();
+            if (category && categoryTotalScores.hasOwnProperty(category)) {
+                categoryTotalScores[category] += avgScore;
+                categoryQuestionCounts[category]++;
+            }
+        }
+
+        // 2. 기업 규모별 보정 계수를 정의하고 적용합니다.
+        const correctionFactors = {
+            'large': 1.0,
+            'medium': 0.9,
+            'small_medium': 0.8,
+            'small_micro': 0.7
+        };
+        const factor = correctionFactors[companySize] || 0.8; // 기본값은 중소기업
+
+        const finalScores = {
+            e: (categoryQuestionCounts.e > 0 ? categoryTotalScores.e / categoryQuestionCounts.e : 50) * factor,
+            s: (categoryQuestionCounts.s > 0 ? categoryTotalScores.s / categoryQuestionCounts.s : 50) * factor,
+            g: (categoryQuestionCounts.g > 0 ? categoryTotalScores.g / categoryQuestionCounts.g : 50) * factor
+        };
+        finalScores.total = (finalScores.e + finalScores.s + finalScores.g) / 3;
+        
+        // 3. 사용자 정보에서 회사명, 대표자명을 가져옵니다.
+        const userRes = await client.query('SELECT company_name, representative FROM users WHERE id = $1', [userId]);
+        const userInfo = userRes.rows[0] || {};
+
+        // 4. diagnoses 테이블에 가상 진단 결과를 저장합니다.
+        const insertQuery = `
+            INSERT INTO diagnoses (
+                user_id, company_name, representative_name, industry_codes, company_size,
+                status, diagnosis_type, total_score, e_score, s_score, g_score
+            ) VALUES ($1, $2, $3, $4, $5, 'completed', 'quick', $6, $7, $8, $9)
+            RETURNING id;
+        `;
+        const values = [
+            userId, userInfo.company_name, userInfo.representative, [industryCode], companySize,
+            finalScores.total.toFixed(2), finalScores.e.toFixed(2), finalScores.s.toFixed(2), finalScores.g.toFixed(2)
+        ];
+        
+        const newDiagnosisRes = await client.query(insertQuery, values);
+        const newDiagnosisId = newDiagnosisRes.rows[0].id;
+
+        await client.query('COMMIT');
+
+        res.status(201).json({ 
+            success: true, 
+            message: '간편 진단이 완료되었습니다.',
+            diagnosisId: newDiagnosisId 
+        });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('간편 진단 생성 에러:', error);
+        res.status(500).json({ success: false, message: '간편 진단 중 서버 에러가 발생했습니다.' });
+    } finally {
+        client.release();
+    }
+});
 
 module.exports = router;
