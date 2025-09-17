@@ -286,108 +286,121 @@ router.get('/me/dashboard', authMiddleware, async (req, res) => {
     const client = await db.pool.connect();
 
     try {
-        const [diagRes, questionsRes, programsRes] = await Promise.all([
-            client.query(`SELECT id, e_score, s_score, g_score, e_total_score, s_total_score, g_total_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]),
-            client.query(`SELECT question_code, esg_category FROM survey_questions`),
-            client.query(
-                `SELECT ua.id AS application_id, ua.status, p.title AS program_title, p.esg_category,
-                 COALESCE(json_agg(am.* ORDER BY am.display_order) FILTER (WHERE am.id IS NOT NULL), '[]'::json) AS timeline
-                 FROM user_applications ua
-                 JOIN esg_programs p ON ua.program_id = p.id
-                 LEFT JOIN application_milestones am ON ua.id = am.application_id
-                 WHERE ua.user_id = $1
-                 GROUP BY ua.id, p.title, p.esg_category, ua.status
-                 ORDER BY ua.created_at DESC`,
-                [userId]
-            )
-        ]);
-
-        if (diagRes.rows.length === 0) {
-            return res.status(404).json({ success: false, message: '완료된 진단이 없어 대시보드를 표시할 수 없습니다.' });
-        }
-
-        const diagnosis = diagRes.rows[0];
+        // 1. 사용자의 최신 진단 정보 가져오기
+        const diagRes = await client.query(`SELECT id, e_score, s_score, g_score, e_total_score, s_total_score, g_total_score FROM diagnoses WHERE user_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, [userId]);
         
-        // ★★★ [핵심 수정] E, S, G 각 카테고리별 "메인 질문"의 개수만 정확히 계산 ★★★
-        const answeredQuestionsRes = await client.query('SELECT question_code FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosis.id]);
-        const questionsMap = new Map(questionsRes.rows.map(q => [q.question_code, q.esg_category]));
-        const mainQuestionsAnswered = { e: new Set(), s: new Set(), g: new Set() };
+        // 진단 정보가 없으면 프로그램 정보만 가지고 응답할 수 있도록 null로 초기화
+        const diagnosis = diagRes.rows[0] || null;
 
-        answeredQuestionsRes.rows.forEach(ans => {
-            const category = (questionsMap.get(ans.question_code) || '').toLowerCase();
-            if (mainQuestionsAnswered[category]) {
-                const mainQuestionCode = ans.question_code.split('_')[0]; // SQ1_1 -> SQ1
-                mainQuestionsAnswered[category].add(mainQuestionCode);
-            }
-        });
-
-        const questionCounts = {
-            e: mainQuestionsAnswered.e.size,
-            s: mainQuestionsAnswered.s.size,
-            g: mainQuestionsAnswered.g.size
-        };
-
-        const initialScores = {
-            e: parseFloat(diagnosis.e_score) || 0,
-            s: parseFloat(diagnosis.s_score) || 0,
-            g: parseFloat(diagnosis.g_score) || 0
-        };
-        initialScores.total = (initialScores.e + initialScores.s + initialScores.g) / 3;
+        // ★★★ 2. 사용자가 신청한 모든 프로그램 정보에 '예상/달성 임팩트' 데이터를 JOIN하여 가져오도록 수정 ★★★
+        const programsQuery = `
+            SELECT 
+                ua.id AS application_id,
+                ua.status,
+                ua.admin_message,
+                p.id AS program_id,
+                p.title AS program_title,
+                p.esg_category,
+                p.potential_e, p.potential_s, p.potential_g,
+                COALESCE(json_agg(am.* ORDER BY am.display_order) FILTER (WHERE am.id IS NOT NULL), '[]'::json) AS timeline,
+                to_jsonb(pid.*) as expected_impact, -- 예상 임팩트 데이터
+                to_jsonb(aid.*) as achieved_impact  -- 달성된 임팩트 데이터
+            FROM user_applications ua
+            JOIN esg_programs p ON ua.program_id = p.id
+            LEFT JOIN application_milestones am ON ua.id = am.application_id
+            LEFT JOIN program_impact_data pid ON p.id = pid.program_id
+            LEFT JOIN achieved_impact_data aid ON ua.id = aid.application_id
+            WHERE ua.user_id = $1
+            GROUP BY ua.id, p.id, pid.id, aid.id
+            ORDER BY ua.created_at DESC
+        `;
+        const programsRes = await client.query(programsQuery, [userId]);
         
-        // ★★★ [핵심 수정] DB의 총점 값이 null일 경우, 평균 점수를 기반으로 총점을 "정확하게" 역산 ★★★
-        const initialTotalScores = {
-            e: parseFloat(diagnosis.e_total_score) || (initialScores.e * questionCounts.e),
-            s: parseFloat(diagnosis.s_total_score) || (initialScores.s * questionCounts.s),
-            g: parseFloat(diagnosis.g_total_score) || (initialScores.g * questionCounts.g)
+        // 3. 점수 계산 로직 (진단 정보가 있을 경우에만 실행)
+        let dashboardData = {
+            programs: programsRes.rows,
+            initialScores: { e: 0, s: 0, g: 0, total: 0 },
+            improvementScores: { e: 0, s: 0, g: 0, total: 0 },
+            realtimeScores: { e: 0, s: 0, g: 0, total: 0 },
+            rawTotalScores: {}
         };
 
-        const improvementScores = { e: 0, s: 0, g: 0 };
-        programsRes.rows.forEach(program => {
-            program.potentialImprovement = { e: 0, s: 0, g: 0 };
-            program.timeline.forEach(milestone => {
-                const improvement = milestone.score_value || 0;
-                const category = (milestone.improvement_category || '').toLowerCase();
-                if (improvement > 0 && ['e', 's', 'g'].includes(category)) {
-                    if (milestone.is_completed) {
-                        improvementScores[category] += improvement;
-                    } else {
-                        program.potentialImprovement[category] += improvement;
-                    }
+        if (diagnosis) {
+            const questionsRes = await client.query(`SELECT question_code, esg_category FROM survey_questions`);
+            const questionsMap = new Map(questionsRes.rows.map(q => [q.question_code, q.esg_category]));
+            const answeredQuestionsRes = await client.query('SELECT question_code FROM diagnosis_answers WHERE diagnosis_id = $1', [diagnosis.id]);
+            
+            const mainQuestionsAnswered = { e: new Set(), s: new Set(), g: new Set() };
+            answeredQuestionsRes.rows.forEach(ans => {
+                const category = (questionsMap.get(ans.question_code) || '').toLowerCase();
+                if (mainQuestionsAnswered[category]) {
+                    mainQuestionsAnswered[category].add(ans.question_code.split('_')[0]);
                 }
             });
-            program.potentialImprovement.total = (program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g);
-        });
-        
-        const realtimeScores = { e: 0, s: 0, g: 0, total: 0 };
-        const categories = ['e', 's', 'g'];
-        categories.forEach(cat => {
-            if (questionCounts[cat] > 0) {
-                const improvedTotal = initialTotalScores[cat] + improvementScores[cat];
-                realtimeScores[cat] = improvedTotal / questionCounts[cat];
-            } else {
-                realtimeScores[cat] = initialScores[cat];
-            }
-        });
-        realtimeScores.total = (realtimeScores.e + realtimeScores.s + realtimeScores.g) / 3;
-        
-        // ★★★ [핵심 수정] 프론트엔드에 표시될 "개선 점수"는 평균 점수의 차이로 계산 ★★★
-        const finalImprovementScores = {
-            e: realtimeScores.e - initialScores.e,
-            s: realtimeScores.s - initialScores.s,
-            g: realtimeScores.g - initialScores.g,
-        };
-        finalImprovementScores.total = realtimeScores.total - initialScores.total;
 
-        res.status(200).json({
-            success: true,
-            dashboard: { 
-                initialScores, 
-                improvementScores: finalImprovementScores, 
-                realtimeScores, 
-                rawTotalScores: initialTotalScores, 
-                programs: programsRes.rows 
-            }
-        });
+            const questionCounts = {
+                e: mainQuestionsAnswered.e.size || 1,
+                s: mainQuestionsAnswered.s.size || 1,
+                g: mainQuestionsAnswered.g.size || 1
+            };
+
+            const initialScores = {
+                e: parseFloat(diagnosis.e_score) || 0,
+                s: parseFloat(diagnosis.s_score) || 0,
+                g: parseFloat(diagnosis.g_score) || 0,
+            };
+            initialScores.total = (initialScores.e + initialScores.s + initialScores.g) / 3;
+
+            const initialTotalScores = {
+                e: parseFloat(diagnosis.e_total_score) || (initialScores.e * questionCounts.e),
+                s: parseFloat(diagnosis.s_total_score) || (initialScores.s * questionCounts.s),
+                g: parseFloat(diagnosis.g_total_score) || (initialScores.g * questionCounts.g)
+            };
+
+            const improvementScores = { e: 0, s: 0, g: 0 };
+            dashboardData.programs.forEach(program => {
+                program.potentialImprovement = { e: 0, s: 0, g: 0 };
+                (program.timeline || []).forEach(milestone => {
+                    const improvement = milestone.score_value || 0;
+                    const category = (milestone.improvement_category || '').toLowerCase();
+                    if (improvement > 0 && ['e', 's', 'g'].includes(category)) {
+                        if (milestone.is_completed) {
+                            improvementScores[category] += improvement;
+                        } else {
+                            program.potentialImprovement[category] += improvement;
+                        }
+                    }
+                });
+                program.potentialImprovement.total = (program.potentialImprovement.e + program.potentialImprovement.s + program.potentialImprovement.g);
+            });
+            
+            const realtimeScores = { e: 0, s: 0, g: 0, total: 0 };
+            const categories = ['e', 's', 'g'];
+            categories.forEach(cat => {
+                if (questionCounts[cat] > 0) {
+                    const improvedTotal = initialTotalScores[cat] + improvementScores[cat];
+                    realtimeScores[cat] = improvedTotal / questionCounts[cat];
+                } else {
+                    realtimeScores[cat] = initialScores[cat];
+                }
+            });
+            realtimeScores.total = (realtimeScores.e + realtimeScores.s + realtimeScores.g) / 3;
+            
+            const finalImprovementScores = {
+                e: realtimeScores.e - initialScores.e,
+                s: realtimeScores.s - initialScores.s,
+                g: realtimeScores.g - initialScores.g,
+            };
+            finalImprovementScores.total = realtimeScores.total - initialScores.total;
+            
+            // 최종 계산된 점수를 dashboardData에 할당
+            dashboardData.initialScores = initialScores;
+            dashboardData.improvementScores = finalImprovementScores;
+            dashboardData.realtimeScores = realtimeScores;
+            dashboardData.rawTotalScores = initialTotalScores;
+        }
+
+        res.status(200).json({ success: true, dashboard: dashboardData });
 
     } catch (error) {
         console.error('대시보드 데이터 조회 에러:', error);
