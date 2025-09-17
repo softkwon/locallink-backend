@@ -3383,18 +3383,20 @@ router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_
     
     const client = await db.pool.connect();
     try {
-        // ★★★ 파일 버퍼에서 UTF-8 BOM을 제거하는 로직 추가 ★★★
+        // 1. 파일 버퍼에서 UTF-8 BOM을 제거하는 로직 추가
         let fileBuffer = req.file.buffer;
         if (fileBuffer[0] === 0xEF && fileBuffer[1] === 0xBB && fileBuffer[2] === 0xBF) {
             fileBuffer = fileBuffer.slice(3);
         }
         
-        const records = parse(fileBuffer, { columns: true, skip_empty_lines: true });
-        // ★★★ 여기까지 수정 ★★★
+        const records = parse(fileBuffer, { columns: true, skip_empty_lines: true, trim: true });
 
         await client.query('BEGIN');
         for (const record of records) {
-            // CSV의 한글 헤더를 DB 컬럼명에 맞게 매핑합니다.
+            // 2. CSV의 한글 헤더를 DB 컬럼명에 맞게 매핑하고, 숫자 필드 유효성 검사
+            const weightValue = parseFloat(record['가중치']);
+            const maxScoreValue = parseFloat(record['총배점']);
+
             const data = {
                 domain: record['영역'],
                 category: record['범주'],
@@ -3404,8 +3406,8 @@ router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_
                 objective: record['목표'],
                 detailed_objective: record['세부목표'],
                 expected_result: record['결과'],
-                weight: record['가중치'] || null,
-                max_score: record['총배점'] || null,
+                weight: !isNaN(weightValue) ? weightValue : null,
+                max_score: !isNaN(maxScoreValue) ? maxScoreValue : null,
                 calculation_formula: record['계산식'],
                 scope: record['범위'],
                 content: record['내용']
@@ -3444,7 +3446,7 @@ router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_
     } catch (error) {
         await client.query('ROLLBACK');
         console.error("K-ESG 데이터 Import 에러:", error);
-        res.status(500).json({ success: false, message: 'Import 중 서버 에러 발생. CSV 파일의 헤더명("영역", "범주" 등)이 정확한지 확인해주세요.' });
+        res.status(500).json({ success: false, message: 'Import 중 서버 에러 발생. CSV 파일의 헤더명("영역", "범주" 등)과 데이터 형식이 정확한지 확인해주세요.' });
     } finally {
         client.release();
     }
