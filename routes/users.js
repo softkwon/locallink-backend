@@ -280,10 +280,7 @@ router.get('/me/diagnosis-status', authMiddleware, async (req, res) => {
     }
 });
 
-/**
- * @api {get} /api/users/me/dashboard
- * @description [V4 최종 수정] 로그인된 사용자의 대시보드 정보를 조회합니다. (안정성 강화)
- */
+// GET /api/users/me/dashboard - 나의 ESG 활동 대시보드 데이터 조회 (V2)
 router.get('/me/dashboard', authMiddleware, async (req, res) => {
     const { userId } = req.user;
     const client = await db.pool.connect();
