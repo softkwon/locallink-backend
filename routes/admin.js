@@ -3383,10 +3383,18 @@ router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_
     
     const client = await db.pool.connect();
     try {
-        const records = parse(req.file.buffer, { columns: true, skip_empty_lines: true });
+        // ★★★ 파일 버퍼에서 UTF-8 BOM을 제거하는 로직 추가 ★★★
+        let fileBuffer = req.file.buffer;
+        if (fileBuffer[0] === 0xEF && fileBuffer[1] === 0xBB && fileBuffer[2] === 0xBF) {
+            fileBuffer = fileBuffer.slice(3);
+        }
+        
+        const records = parse(fileBuffer, { columns: true, skip_empty_lines: true });
+        // ★★★ 여기까지 수정 ★★★
+
         await client.query('BEGIN');
         for (const record of records) {
-            // ★★★ CSV의 한글 헤더를 DB 컬럼명에 맞게 매핑합니다. ★★★
+            // CSV의 한글 헤더를 DB 컬럼명에 맞게 매핑합니다.
             const data = {
                 domain: record['영역'],
                 category: record['범주'],
@@ -3441,5 +3449,6 @@ router.post('/k-esg-indicators/import', authMiddleware, checkPermission(['super_
         client.release();
     }
 });
+
 
 module.exports = router;
