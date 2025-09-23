@@ -111,19 +111,24 @@ router.post('/', authMiddleware, async (req, res) => {
             }
         }
 
+        // ★★★ [수정] 쿼리 파라미터 번호(&14 -> $14, $15) 수정 및 diagnosis_type 값 변경 ★★★
         const query = `
             INSERT INTO diagnoses (
                 user_id, company_name, representative_name, industry_codes, establishment_year,
                 employee_count, products_services, recent_sales, recent_operating_profit,
                 export_percentage, is_listed, company_size, main_business_region,
                 selected_major_company_id, diagnosis_type, status, is_free
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, &14, 'simple', 'in_progress', $14)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'simple', 'in_progress', $15)
             RETURNING id;
         `;
+
+        // ★★★ [수정] mainBusinessRegion이 배열이 아닐 경우 배열로 감싸주기 ★★★
+        const regionArray = Array.isArray(mainBusinessRegion) ? mainBusinessRegion : [mainBusinessRegion];
+
         const values = [
             userId, companyName, representativeName, industryCodes, establishmentYear,
             employeeCount, productsServices, recentSales, recentOperatingProfit,
-            exportPercentage, isListed, companySize, mainBusinessRegion,
+            exportPercentage, isListed, companySize, regionArray, // 배열 형태로 전달
             selected_major_company_id,
             isFree 
         ];
